@@ -52,6 +52,10 @@ def ensure_environment() -> None:
     if subprocess.call(cmd) != 0:
         say("")
         say("L'installation n'a pas abouti. Vérifie la connexion Internet puis relance Albumia.")
+        if sys.version_info >= (3, 14):
+            say(f"Ton Python ({sys.version.split()[0]}) est peut-être trop récent pour OpenCV : installe "
+                "aussi Python 3.12 depuis https://www.python.org/downloads/ puis relance Albumia.bat.")
+            say("Ensuite, supprime le dossier .venv pour repartir de zéro.")
         sys.exit(1)
     STAMP.write_text(requirements_hash())
 
