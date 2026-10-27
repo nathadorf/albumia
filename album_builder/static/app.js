@@ -23,7 +23,13 @@ async function api(path, { method = "GET", body, form } = {}) {
   if (form) { opts.body = form; }
   else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers = { "Content-Type": "application/json" }; }
   if (method === "GET" && !form && body === undefined) opts.method = "GET";
-  const res = await fetch(path, opts);
+  let res;
+  try { res = await fetch(path, opts); }
+  catch {  // le serveur ne tourne plus (fenêtre fermée, PC redémarré…)
+    const err = new Error("Albumia n'est pas lancé. Double-clique sur Albumia.bat (ou ouvre le dossier dans VS Code), puis recharge cette page.");
+    err.code = "offline";
+    throw err;
+  }
   let data = null;
   try { data = await res.json(); } catch { /* réponse vide */ }
   if (!res.ok) {
