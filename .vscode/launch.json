@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "📸 Ouvrir Albumia",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/lancer.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Albumia (débogage du serveur)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "album_builder.webapp",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "windows": { "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe" },
+      "cwd": "${workspaceFolder}",
+      "env": { "ALBUMIA_HOME": "${workspaceFolder}" },
+      "console": "integratedTerminal"
+    }
+  ]
+}

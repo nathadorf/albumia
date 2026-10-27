@@ -1,0 +1,11 @@
+# Secrets et données personnelles : ne JAMAIS les versionner
+credentials.json
+token.json
+token_full.json
+refs/
+.cache/
+out/
+models/
+.venv/
+__pycache__/
+*.pyc

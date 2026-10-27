@@ -1,0 +1,9 @@
+{
+  "files.exclude": {
+    "**/__pycache__": true,
+    ".venv": true,
+    ".cache": true,
+    "models": true
+  },
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv"
+}

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Albumia</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📸</text></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">📸</span> Albumia</div>
+  <div id="account" class="account" hidden></div>
+</header>
+
+<main>
+  <!-- ============ Première connexion ============ -->
+  <section id="screen-setup" class="screen" hidden>
+    <div class="card hero">
+      <h1>Bienvenue dans Albumia</h1>
+      <p class="lead">Albumia choisit les plus belles photos de ton Google Drive et les range dans un album, sans rien déplacer ni dupliquer.</p>
+
+      <div id="setup-credentials" hidden>
+        <div class="callout">
+          <b>Une étape technique à faire une seule fois</b> (par la personne qui a installé Albumia) :
+          créer l'accès Google et déposer ici le fichier <code>credentials.json</code>.
+          Le pas-à-pas est dans le guide <code>README.md</code>, section « Accès Google Drive ».
+        </div>
+        <label class="drop" id="cred-drop">
+          <input type="file" accept=".json,application/json" hidden>
+          <span class="drop-icon">🔑</span>
+          <span>Dépose <b>credentials.json</b> ici, ou clique pour le choisir</span>
+        </label>
+      </div>
+
+      <div id="setup-login" hidden>
+        <p>Pour commencer, autorise Albumia à <b>lire tes photos</b> et à <b>créer tes albums</b> dans ton Google Drive.</p>
+        <button class="btn primary big" id="btn-login">Se connecter à Google</button>
+        <p class="hint" id="login-hint" hidden>Une page Google vient de s'ouvrir. Choisis ton compte, puis accepte.
+          Si Google affiche « application non validée », clique sur <b>Paramètres avancés</b> puis <b>Accéder à Albumia</b> : c'est normal, c'est ton application à toi.</p>
+      </div>
+      <p class="privacy">🔒 Tes photos restent chez toi : elles sont analysées sur cet ordinateur, jamais envoyées à une IA.</p>
+    </div>
+  </section>
+
+  <!-- ============ Formulaire ============ -->
+  <section id="screen-form" class="screen" hidden>
+    <div id="past-albums" class="past" hidden>
+      <h2 class="small-title">Mes derniers albums</h2>
+      <div class="past-row" id="past-row"></div>
+    </div>
+
+    <div class="card step">
+      <div class="step-head"><span class="num">1</span>
+        <div><h2>Qui veux-tu retrouver dans l'album ?</h2>
+        <p class="sub">Touche une personne pour la choisir. Pas de personne choisie : Albumia prend simplement les plus belles photos.</p></div>
+      </div>
+      <div class="people" id="people"></div>
+    </div>
+
+    <div class="card step">
+      <div class="step-head"><span class="num">2</span>
+        <div><h2>Décris l'album dont tu rêves</h2>
+        <p class="sub">Écris comme tu parles : combien de photos, quelle période, qui, quelle ambiance.</p></div>
+      </div>
+      <textarea id="prompt" rows="3" placeholder="Ex. : 50 photos d'Eydel et ses frères en 2026, plein de sourires"></textarea>
+      <div class="examples" id="examples"></div>
+
+      <div class="understood" id="understood">
+        <div class="understood-title">✨ Voici ce que j'ai compris <span class="sub">(tu peux tout modifier)</span></div>
+        <div class="fields">
+          <label class="field wide"><span>Nom de l'album</span><input id="f-name" type="text"></label>
+          <label class="field"><span>Nombre de photos</span><input id="f-count" type="number" min="1" max="500"></label>
+          <label class="field"><span>Du</span><input id="f-from" type="date"></label>
+          <label class="field"><span>Au</span><input id="f-to" type="date"></label>
+        </div>
+        <div class="roles" id="roles"></div>
+        <div class="toggles">
+          <label class="toggle"><input type="checkbox" id="f-smiles"><span>Priorité aux sourires</span></label>
+          <label class="toggle"><input type="checkbox" id="f-portraits"><span>Seulement des photos avec des visages</span></label>
+          <label class="toggle" id="claude-toggle" hidden><input type="checkbox" id="f-claude"><span>Affiner avec Claude <small>(envoie ~150 miniatures à l'API Anthropic, payant)</small></span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card step">
+      <div class="step-head"><span class="num">3</span>
+        <div><h2>Où sont les photos ?</h2>
+        <p class="sub">Dans Google Drive, ouvre le dossier de photos, copie l'adresse en haut du navigateur et colle-la ici.</p></div>
+      </div>
+      <div class="folder-row">
+        <input id="folder" type="url" placeholder="https://drive.google.com/drive/folders/…" autocomplete="off">
+      </div>
+      <div class="folder-status" id="folder-status"></div>
+    </div>
+
+    <div class="cta">
+      <button class="btn primary big" id="btn-build" disabled>Préparer mon album ✨</button>
+      <p class="hint" id="build-hint">Rien n'est créé dans ton Drive avant que tu aies validé la sélection.</p>
+    </div>
+  </section>
+
+  <!-- ============ Préparation ============ -->
+  <section id="screen-progress" class="screen" hidden>
+    <div class="card hero center">
+      <div class="spinner"></div>
+      <h1 id="p-title">Je prépare ton album…</h1>
+      <p class="lead" id="p-label">Démarrage…</p>
+      <div class="bar"><div id="p-bar"></div></div>
+      <p class="hint" id="p-detail"></p>
+      <ol class="steps" id="p-steps"></ol>
+      <p class="hint">La première fois peut être longue (chaque photo est regardée). Les fois suivantes, c'est beaucoup plus rapide.</p>
+      <button class="btn ghost" id="btn-cancel">Annuler</button>
+    </div>
+  </section>
+
+  <!-- ============ Relecture ============ -->
+  <section id="screen-review" class="screen" hidden>
+    <div class="review-head">
+      <div>
+        <input id="r-name" class="title-input" type="text" aria-label="Nom de l'album">
+        <p class="sub" id="r-stats"></p>
+      </div>
+      <button class="btn ghost" id="btn-back">← Modifier ma demande</button>
+    </div>
+    <p class="tip">Clique sur une photo pour l'agrandir. Le <b>✕</b> la retire et la remplace par une autre du même moment.</p>
+    <div id="r-grid"></div>
+    <div class="sticky-cta">
+      <span id="r-count"></span>
+      <button class="btn primary big" id="btn-apply">Créer l'album dans mon Drive</button>
+    </div>
+  </section>
+
+  <!-- ============ Terminé ============ -->
+  <section id="screen-done" class="screen" hidden>
+    <div class="card hero center">
+      <div class="big-emoji">🎉</div>
+      <h1 id="d-title">Ton album est prêt !</h1>
+      <p class="lead" id="d-text"></p>
+      <a class="btn primary big" id="d-link" target="_blank" rel="noopener">Ouvrir l'album dans Google Drive</a>
+      <p class="hint">L'album contient des raccourcis vers tes photos : elles n'ont pas bougé et ne prennent pas de place en plus. Tu le retrouves dans « Mon Drive › Albums (Albumia) ».</p>
+      <button class="btn ghost" id="btn-again">Créer un autre album</button>
+    </div>
+  </section>
+</main>
+
+<!-- ============ Fenêtre : ajouter des personnes ============ -->
+<dialog id="dlg-faces">
+  <form method="dialog" class="dlg">
+    <h2>Ajouter des personnes</h2>
+    <p class="sub">Choisis une ou plusieurs photos où l'on voit bien les visages (une photo de famille marche très bien). Je te demanderai ensuite qui est qui.</p>
+    <label class="drop" id="faces-drop">
+      <input type="file" accept="image/*" multiple hidden>
+      <span class="drop-icon">🖼️</span>
+      <span>Dépose des photos ici, ou clique pour les choisir</span>
+    </label>
+    <div id="faces-busy" class="hint" hidden>Je cherche les visages…</div>
+    <div id="faces-list" class="faces"></div>
+    <p class="hint" id="faces-tip" hidden>Astuce : pour les enfants, prends des photos récentes. 3 à 5 photos par personne, c'est l'idéal.</p>
+    <datalist id="known-names"></datalist>
+    <div class="dlg-actions">
+      <button class="btn ghost" value="cancel">Annuler</button>
+      <button class="btn primary" id="btn-faces-save" value="save" disabled>Enregistrer</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ Fenêtre : une personne ============ -->
+<dialog id="dlg-person">
+  <form method="dialog" class="dlg">
+    <h2 id="pp-title"></h2>
+    <p class="sub">Les visages qu'Albumia utilise pour la reconnaître. Retire ceux qui ne lui ressemblent plus.</p>
+    <div class="faces" id="pp-photos"></div>
+    <div class="dlg-actions">
+      <button class="btn danger" id="btn-person-delete" value="delete">Oublier cette personne</button>
+      <button class="btn primary" value="close">Fermer</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="lightbox" hidden><img alt=""><div class="lb-caption"></div></div>
+<div id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

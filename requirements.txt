@@ -1,0 +1,8 @@
+google-api-python-client>=2.100
+google-auth>=2.23
+google-auth-oauthlib>=1.1
+requests>=2.31
+numpy>=1.24
+# <5 : les détecteurs de sourire / yeux (cascades Haar) sont fournis avec OpenCV 4.x
+opencv-python>=4.8,<5
+flask>=3.0
