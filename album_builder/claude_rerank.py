@@ -29,7 +29,9 @@ Réponds UNIQUEMENT par un tableau JSON, sans texte autour :
 
 
 def _encode(path: Path, max_side: int = 768) -> str | None:
-    img = cv2.imread(str(path))
+    from .vision import imread
+
+    img = imread(path)
     if img is None:
         return None
     h, w = img.shape[:2]

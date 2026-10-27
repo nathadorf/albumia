@@ -39,6 +39,17 @@ class VisionTests(unittest.TestCase):
         self.assertAlmostEqual(f["clip_low"], 1.0)
         self.assertAlmostEqual(f["mean"], 0.0)
 
+    def test_imread_imwrite_accented_path(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Arié" / "visage.jpg"
+            path.parent.mkdir()
+            self.assertTrue(self.vision.imwrite(path, self.sharp))
+            img = self.vision.imread(path)
+            self.assertEqual(img.shape, self.sharp.shape)
+            self.assertIsNone(self.vision.imread(Path(tmp) / "absent.jpg"))
+
     def test_resize_max(self):
         out = self.vision.resize_max(self.sharp, 320)
         self.assertEqual(max(out.shape[:2]), 320)

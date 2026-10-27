@@ -134,7 +134,24 @@ def get_engine(model_dir: Path) -> FaceEngine:
     return eng
 
 
+def imread(path: Path) -> np.ndarray | None:
+    """cv2.imread ne sait pas lire un chemin accentué sous Windows (« refs/Arié/… ») : on passe par numpy."""
+    try:
+        return decode(np.fromfile(str(path), dtype=np.uint8).tobytes())
+    except OSError:
+        return None
+
+
+def imwrite(path: Path, img: np.ndarray, params: list[int] | None = None) -> bool:
+    ok, buf = cv2.imencode(Path(path).suffix or ".jpg", img, params or [])
+    if ok:
+        buf.tofile(str(path))
+    return bool(ok)
+
+
 def decode(data: bytes) -> np.ndarray | None:
+    if not data:
+        return None
     return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
 
@@ -185,12 +202,15 @@ def build_references(engine: FaceEngine, refs_dir: Path) -> dict[str, list[float
         for path in sorted(label_dir.iterdir()):
             if path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
                 continue
-            img = cv2.imread(str(path))
+            img = imread(path)
             if img is None:
                 print(f"  ! {path} illisible, ignoré")
                 continue
             img = resize_max(img, 1600)
             faces = engine.detect_faces(img)
+            if not faces and max(img.shape[:2]) < 800:  # petit visage recadré : on réessaie en plus grand
+                img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+                faces = engine.detect_faces(img)
             if not faces:
                 print(f"  ! aucun visage détecté dans {path.name}, ignoré")
                 continue

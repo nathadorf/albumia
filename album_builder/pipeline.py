@@ -155,7 +155,7 @@ def build_plan(
             return f.id, None
         feat = vision.analyze(img, vision.get_engine(model_dir))
         small = vision.resize_max(img, 640)
-        cv2.imwrite(str(thumbs_dir / f"{f.id}.jpg"), small, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        vision.imwrite(thumbs_dir / f"{f.id}.jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 80])
         return f.id, feat
 
     by_id = {f.id: f for f in files}
