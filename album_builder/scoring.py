@@ -232,14 +232,28 @@ def allocate(counts: dict, total: int) -> dict:
     return alloc
 
 
-def select_spread(items: list[Candidate], n: int) -> list[Candidate]:
-    """Choisit n photos en couvrant toute la période (par mois), meilleure note d'abord."""
+def select_spread(items: list[Candidate], n: int, max_per_day: int = 2) -> list[Candidate]:
+    """Choisit n photos en couvrant toute la période (par mois), meilleure note d'abord.
+
+    Au plus `max_per_day` photos d'une même journée (même scène sous d'autres angles), sauf s'il
+    n'y a pas assez d'autres photos dans le mois pour remplir sa part.
+    """
     months: dict[tuple[int, int], list[Candidate]] = {}
     for c in items:
         months.setdefault((c.when.year, c.when.month), []).append(c)
     alloc = allocate({k: len(v) for k, v in months.items()}, n)
     chosen: list[Candidate] = []
     for key, quota in alloc.items():
-        top = sorted(months[key], key=lambda c: c.score, reverse=True)[:quota]
-        chosen.extend(top)
+        ranked = sorted(months[key], key=lambda c: c.score, reverse=True)
+        per_day: dict = {}
+        picked: list[Candidate] = []
+        for c in ranked:
+            if len(picked) == quota:
+                break
+            if per_day.get(c.when.date(), 0) < max_per_day:
+                per_day[c.when.date()] = per_day.get(c.when.date(), 0) + 1
+                picked.append(c)
+        if len(picked) < quota:  # pas assez de journées différentes : on complète
+            picked += [c for c in ranked if c not in picked][: quota - len(picked)]
+        chosen.extend(picked)
     return sorted(chosen, key=lambda c: c.when)

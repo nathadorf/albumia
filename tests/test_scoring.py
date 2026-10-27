@@ -138,6 +138,15 @@ class AllocationTests(unittest.TestCase):
     def test_total_larger_than_available(self):
         self.assertEqual(sum(scoring.allocate({"a": 2, "b": 1}, 10).values()), 3)
 
+    def test_select_spread_limits_photos_per_day(self):
+        day1, day2 = datetime(2023, 5, 7, 10), datetime(2023, 5, 20, 10)
+        items = [cand(i, day1 + timedelta(minutes=30 * i), 0.9 - i * 0.01) for i in range(5)]
+        items.append(cand(9, day2, 0.1))
+        chosen = scoring.select_spread(items, 3)
+        self.assertEqual([c.file_id for c in chosen], ["id0", "id1", "id9"])
+        # s'il n'y a que cette journée, on complète quand même
+        self.assertEqual(len(scoring.select_spread(items[:5], 4)), 4)
+
     def test_select_spread_covers_months_and_is_chronological(self):
         items = []
         for m in range(1, 13):
