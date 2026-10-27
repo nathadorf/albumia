@@ -169,12 +169,23 @@
 <dialog id="dlg-person">
   <form method="dialog" class="dlg">
     <h2 id="pp-title"></h2>
-    <p class="sub">Les visages qu'Albumia utilise pour la reconnaître. Retire ceux qui ne lui ressemblent plus.</p>
+    <label class="field birth"><span>Date de naissance (pour ne pas confondre frères et sœurs, et faire des albums par âge)</span><input id="pp-birth" type="date"></label>
+    <p class="sub">Les visages qu'Albumia utilise pour la reconnaître. Ajoute des photos à différents âges, et retire celles qui ne lui ressemblent pas.</p>
     <div class="faces" id="pp-photos"></div>
     <div class="dlg-actions">
       <button class="btn danger" id="btn-person-delete" value="delete">Oublier cette personne</button>
       <button class="btn primary" value="close">Fermer</button>
     </div>
+  </form>
+</dialog>
+
+<!-- ============ Fenêtre : qui est sur tes photos ? ============ -->
+<dialog id="dlg-groups">
+  <form method="dialog" class="dlg">
+    <h2>Qui est sur tes photos ?</h2>
+    <p class="sub">Voici les visages que j'ai vus le plus souvent dans tes photos déjà analysées. Donne un prénom à ceux que tu veux retrouver (une même personne peut revenir à plusieurs âges : donne-lui le même prénom).</p>
+    <div id="groups-list" class="groups"></div>
+    <div class="dlg-actions"><button class="btn primary" value="close">Terminé</button></div>
   </form>
 </dialog>
 

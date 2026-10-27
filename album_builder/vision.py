@@ -29,7 +29,7 @@ SFACE_URLS = (
 )
 MIN_FACE_PX = 20
 # À augmenter quand `analyze` change : les photos déjà en cache sont alors réanalysées.
-FEATURES_VERSION = 2
+FEATURES_VERSION = 3
 FACE_CROP = 112
 
 
@@ -91,6 +91,8 @@ class FaceEngine:
                 "lap": float(cv2.Laplacian(crop_sq, cv2.CV_64F).var()),
                 "smile": self._smile(crop),
                 "eyes": self._eyes(crop),
+                "frontal": frontal_score(row),
+                "edge": bool(x <= 2 or y <= 2 or x + fw >= w - 2 or y + fh >= h - 2),
             }
             if with_embedding:
                 feat = self.recognizer.feature(self.recognizer.alignCrop(img, row)).flatten()
@@ -99,7 +101,8 @@ class FaceEngine:
             faces.append(face)
         return faces
 
-    # Heuristiques Haar : rapides mais imparfaites. Pour un tri fin, utilisez --use-claude.
+    # Heuristiques Haar. Le modèle d'expressions d'OpenCV Zoo a été essayé sur de vraies photos
+    # d'enfants : pas meilleur. Pour juger l'émotion, l'avis de Claude (option) reste la voie fiable.
     def _smile(self, face_gray: np.ndarray) -> float:
         if self.smile_cascade.empty():  # cascades absentes (ex. OpenCV 5) : note neutre
             return 0.5
@@ -124,6 +127,28 @@ class FaceEngine:
         roi = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
         found = self.eye_cascade.detectMultiScale(roi, scaleFactor=1.1, minNeighbors=6, minSize=(14, 14))
         return min(1.0, len(found) / 2.0)
+
+
+def frontal_score(row) -> float:
+    """1 = visage de face, 0 = de profil, d'après les repères (yeux, nez) donnés par YuNet."""
+    rx, ry, lx, ly, nx = (float(v) for v in row[4:9])
+    eye_dist = abs(lx - rx)
+    if eye_dist < 1:
+        return 0.0
+    yaw = abs(nx - (rx + lx) / 2) / eye_dist
+    return round(max(0.0, min(1.0, 1 - yaw / 0.5)), 3)
+
+
+def hue_histogram(img: np.ndarray, bins: int = 12) -> list[float]:
+    """Couleurs dominantes (teinte pondérée par la saturation) pour repérer les scènes semblables."""
+    small = cv2.resize(img, (64, 48), interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    hue = (hsv[..., 0].astype(int) * bins // 180).flatten()
+    weight = hsv[..., 1].astype(float).flatten() / 255.0
+    hist = np.bincount(hue, weights=weight, minlength=bins)[:bins]
+    grey = float((1 - weight).sum())  # part de gris / noir / blanc
+    total = hist.sum() + grey or 1.0
+    return [round(float(v) / total, 3) for v in [*hist, grey]]
 
 
 _thread_local = threading.local()
@@ -191,6 +216,7 @@ def analyze(img: np.ndarray, engine: FaceEngine | None, with_embedding: bool = T
         "clip_low": float((gray <= 5).mean()),
         "clip_high": float((gray >= 250).mean()),
         "dhash": dhash(gray),
+        "hues": hue_histogram(img),
         "faces": engine.detect_faces(img, with_embedding) if engine else [],
     }
 

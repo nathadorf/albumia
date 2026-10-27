@@ -17,7 +17,7 @@ from pathlib import Path
 from flask import Flask, abort, jsonify, request, send_from_directory
 from googleapiclient.errors import HttpError
 
-from . import intent, people, pipeline, scoring
+from . import intent, learn, people, pipeline, scoring
 from .errors import AlbumError, Cancelled
 from .report import slugify
 
@@ -288,6 +288,102 @@ def save_faces():
     return jsonify({"saved": saved, "people": _people_payload()})
 
 
+@app.put("/api/people/<person>")
+def update_person(person):
+    body = request.get_json(silent=True) or {}
+    if "birth" in body:
+        people.set_birth(REFS, person, body.get("birth") or None)
+    return jsonify(_people_payload())
+
+
+_face_groups: dict[str, list[dict]] = {}
+
+
+def _thumb_face(item: dict):
+    """Visage recadré depuis la miniature en cache (640 px), à partir de sa boîte (analyse en 1024 px)."""
+    from . import vision
+
+    img = vision.imread(ROOT / ".cache" / "thumbs" / f"{item['file']}.jpg")
+    if img is None:
+        return None
+    scale = img.shape[1] / float(item["w"])
+    box = [int(round(v * scale)) for v in item["box"]]
+    return vision.face_crop(img, box)
+
+
+@app.get("/api/face-groups")
+def face_groups():
+    """« Qui est sur tes photos ? » : regroupe les visages déjà analysés qu'Albumia ne connaît pas."""
+    import cv2
+    import numpy as np
+
+    from . import vision
+
+    cache = pipeline._load_cache(ROOT / ".cache" / "features.json")
+    if not cache:
+        raise AlbumError("Prépare d'abord un album : je regroupe ensuite les visages de tes photos.",
+                         code="no_analysis")
+    try:
+        known = vision.build_references(vision.get_engine(ROOT / "models"), REFS) if REFS.exists() else {}
+    except AlbumError:
+        known = {}
+    faces = []
+    for fid, entry in cache.items():
+        feat = entry["feat"]
+        real = scoring.real_faces(feat)
+        labels = scoring.face_labels(real, known, scoring.DEFAULT_MATCH_THRESHOLD)
+        for face, label in zip(real, labels):
+            if "emb" in face and not label:
+                faces.append({"file": fid, "box": face["box"], "w": feat["w"],
+                              "size": face["box"][2] * face["box"][3], "emb": np.array(face["emb"])})
+    faces.sort(key=lambda f: f["size"], reverse=True)
+    clusters: list[dict] = []
+    for f in faces[:3000]:
+        best = max(clusters, key=lambda c: float(c["center"] @ f["emb"]), default=None)
+        if best is not None and float(best["center"] @ f["emb"]) >= 0.6:
+            best["items"].append(f)
+            center = best["center"] * (len(best["items"]) - 1) + f["emb"]
+            best["center"] = center / (np.linalg.norm(center) or 1.0)
+        else:
+            clusters.append({"center": f["emb"], "items": [f]})
+    clusters = sorted((c for c in clusters if len(c["items"]) >= 3), key=lambda c: len(c["items"]), reverse=True)[:8]
+    _face_groups.clear()
+    out = []
+    for c in clusters:
+        gid = uuid.uuid4().hex[:10]
+        _face_groups[gid] = c["items"]
+        previews = []
+        for item in c["items"][:4]:
+            crop = _thumb_face(item)
+            if crop is not None:
+                ok, buf = cv2.imencode(".jpg", vision.resize_max(crop, 160), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ok:
+                    previews.append("data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode())
+        out.append({"id": gid, "count": len(c["items"]), "previews": previews})
+    return jsonify(out)
+
+
+@app.post("/api/face-groups/<gid>")
+def name_face_group(gid):
+    """Donne un prénom à un groupe : ses visages les plus grands deviennent des références."""
+    import cv2
+
+    name = (request.get_json(silent=True) or {}).get("name", "").strip()
+    items = _face_groups.pop(gid, None)
+    if not items or not name:
+        raise AlbumError("Ce groupe n'existe plus : recharge la liste.", code="bad_group")
+    saved = 0
+    for item in items[:6]:
+        crop = _thumb_face(item)
+        if crop is None:
+            continue
+        ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if ok:
+            people.save_face(REFS, name, buf.tobytes())
+            saved += 1
+    return jsonify({"saved": saved, "people": _people_payload()})
+
+
 @app.delete("/api/people/<person>")
 def delete_person(person):
     people.remove_person(REFS, person)
@@ -306,7 +402,8 @@ def interpret():
     body = request.get_json(silent=True) or {}
     names = [p["name"] for p in people.list_people(REFS)]
     selected = [s for s in body.get("selected", []) if s in names]
-    return jsonify(intent.interpret(body.get("prompt", ""), names, selected).to_dict())
+    births = people.births(REFS)
+    return jsonify(intent.interpret(body.get("prompt", ""), names, selected, births=births).to_dict())
 
 
 @app.post("/api/folder")
@@ -336,7 +433,9 @@ def build():
     folder = (b.get("folder") or "").strip()
     pipeline.parse_folder_id(folder)
     name = (b.get("name") or "").strip() or "Mon album"
-    weights = scoring.Weights(smile=0.28, eyes=0.12) if b.get("favor_smiles") else scoring.Weights()
+    weights = learn.learned_weights(ROOT)  # ajustés d'après les corrections passées
+    if b.get("favor_smiles"):
+        weights.smile *= 2.5
     use_claude = bool(b.get("use_claude")) and claude_available()
     params = pipeline.BuildParams(
         name=name, folders=[folder], count=max(1, min(intent.MAX_COUNT, int(b.get("count") or 50))),
@@ -403,6 +502,8 @@ def apply():
     plan_path, plan = _read_plan(b.get("slug", ""))
     known = {p["id"]: p for p in plan["photos"] + plan.get("reserve", [])}
     photos = [known[i] for i in b.get("ids", []) if i in known]
+    removed = [{**known[r["id"]], "reason": r.get("reason", "gout")}
+               for r in b.get("removed", []) if r.get("id") in known]
     name = (b.get("name") or "").strip() or plan["album_name"]
     full = bool(b.get("full"))
     client = drive(full=True if full else None)
@@ -420,6 +521,7 @@ def apply():
                 )
             raise AlbumError(f"Google Drive a refusé la création ({e.reason}).", code="drive")
         url = folder.get("webViewLink") or f"https://drive.google.com/drive/folders/{folder['id']}"
+        learn.record(ROOT, name, photos, removed)
         plan.update(album_name=name, photos=photos, drive_url=url)
         plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"url": url, "count": len(photos), "name": name}

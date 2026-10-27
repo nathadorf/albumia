@@ -122,9 +122,21 @@ def _album_name(text: str, people: list[str], period_label: str, today: date) ->
     return name or f"Album du {today.strftime('%d/%m/%Y')}"
 
 
+def _add_years(d: date, years: int) -> date:
+    try:
+        return d.replace(year=d.year + years)
+    except ValueError:  # 29 février
+        return d.replace(year=d.year + years, day=28)
+
+
+AGE_RE = re.compile(r"premiere annee|1(?:re|ere)? annee|(\d+|deux|trois|quatre|cinq) ans?\b")
+AGE_WORDS = {"deux": 2, "trois": 3, "quatre": 4, "cinq": 5}
+
+
 def interpret(text: str, people: list[str], selected: list[str] | None = None,
-              today: date | None = None) -> Intent:
-    """`people` : toutes les personnes connues ; `selected` : celles cochées dans l'interface."""
+              today: date | None = None, births: dict[str, date] | None = None) -> Intent:
+    """`people` : toutes les personnes connues ; `selected` : celles cochées dans l'interface ;
+    `births` : dates de naissance connues (« la première année d'Eydel », « Arié à 2 ans »)."""
     today = today or date.today()
     t = normalize(text or "")
     it = Intent()
@@ -154,6 +166,24 @@ def interpret(text: str, people: list[str], selected: list[str] | None = None,
         it.understood.append("avec " + ", ".join(it.must)
                              + (f" (et si possible {', '.join(it.bonus)})" if it.bonus else ""))
 
+    # « la première année d'Eydel », « Arié à 2 ans » : période calculée depuis la naissance
+    main = next((p for p in it.must if births and p in births), None)
+    m = AGE_RE.search(t) if main else None
+    if m and not re.search(r"\b(19|20)\d{2}\b", t):
+        birth = births[main]
+        if m.group(1) is None:
+            years, label = 0, "La première année"
+        else:
+            years = int(AGE_WORDS.get(m.group(1), m.group(1)))
+            label = f"{years} an{'s' if years > 1 else ''}"
+        lo = _add_years(birth, years)
+        hi = _add_years(birth, years + 1) - timedelta(days=1)
+        it.date_from, it.date_to = lo.isoformat(), hi.isoformat()
+        of = "d'" if normalize(main)[:1] in "aeiouyh" else "de "
+        it.period_label = f"{label} {of}{main}" if years == 0 else f"{main} à {label}"
+        it.understood = [u for u in it.understood if not u.startswith("période")]
+        it.understood.append(f"période : {it.period_label}")
+
     if any(w in t for w in PORTRAITS):
         it.faces_only = True
         it.understood.append("des portraits")
@@ -162,4 +192,6 @@ def interpret(text: str, people: list[str], selected: list[str] | None = None,
         it.understood.append("priorité aux sourires")
 
     it.name = _album_name(text or "", targets, label, today)
+    if it.period_label and it.period_label != label:  # période définie par l'âge
+        it.name = _album_name(text or "", [], it.period_label, today)
     return it

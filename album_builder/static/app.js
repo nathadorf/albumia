@@ -79,7 +79,7 @@ const state = {
   dirty: new Set(),          // champs modifiés à la main : la description ne les écrase plus
   roles: {},                 // prénom -> "must" | "bonus"
   folder: { link: "", ok: false, name: "" },
-  plan: null, slug: null, photos: [], reserve: [],
+  plan: null, slug: null, photos: [], reserve: [], removed: [],
   buildJob: null,
 };
 
@@ -163,6 +163,9 @@ function renderPeople() {
     el("div", { class: "person add", onclick: openFaces },
       el("div", { class: "avatar" }, "+"),
       el("div", { class: "pname" }, "Ajouter")),
+    el("div", { class: "person add", onclick: openGroups, title: "Albumia te montre les visages qu'il a vus dans tes photos" },
+      el("div", { class: "avatar" }, "🔎"),
+      el("div", { class: "pname" }, "Retrouver")),
   );
   const datalist = $("#known-names");
   datalist.replaceChildren(...state.people.map((p) => el("option", { value: p.name })));
@@ -248,6 +251,7 @@ function openPerson(name) {
   openedPerson = name;
   const p = state.people.find((x) => x.name === name);
   $("#pp-title").textContent = name;
+  $("#pp-birth").value = p.birth || "";
   $("#pp-photos").replaceChildren(...p.photos.map((src) => el("div", { class: "face" },
     el("img", { src, alt: "" }),
     el("button", { type: "button", class: "x", title: "Retirer ce visage", onclick: async () => {
@@ -257,6 +261,44 @@ function openPerson(name) {
     } }, "✕"))));
   if (!$("#dlg-person").open) $("#dlg-person").showModal();
 }
+$("#pp-birth").addEventListener("change", async () => {
+  try {
+    state.people = await api(`/api/people/${encodeURIComponent(openedPerson)}`, { method: "PUT", body: { birth: $("#pp-birth").value || null } });
+    toast("Date de naissance enregistrée.");
+    interpretSoon(0);
+  } catch (e) { toast(e.message); }
+});
+
+// --- « Qui est sur tes photos ? » : groupes de visages trouvés dans les photos déjà analysées
+async function openGroups() {
+  const list = $("#groups-list");
+  list.replaceChildren(el("p", { class: "hint" }, "Je regroupe les visages de tes photos…"));
+  $("#dlg-groups").showModal();
+  try {
+    const groups = await api("/api/face-groups");
+    if (!groups.length) { list.replaceChildren(el("p", { class: "hint" }, "Je ne trouve pas de nouveau visage : tout le monde est déjà connu.")); return; }
+    list.replaceChildren(...groups.map((g) => {
+      const input = el("input", { type: "text", list: "known-names", placeholder: "Qui est-ce ?" });
+      const save = el("button", { type: "button", class: "btn primary small", onclick: async () => {
+        if (!input.value.trim()) { input.focus(); return; }
+        save.disabled = true;
+        try {
+          const res = await api(`/api/face-groups/${g.id}`, { method: "POST", body: { name: input.value.trim() } });
+          state.people = res.people; renderPeople();
+          card.replaceChildren(el("p", { class: "ok-line" }, `✓ ${res.saved} visages ajoutés à ${input.value.trim()}`));
+        } catch (e) { toast(e.message); save.disabled = false; }
+      } }, "Enregistrer");
+      const card = el("div", { class: "group" },
+        el("div", { class: "group-faces" }, ...g.previews.map((src) => el("img", { src, alt: "" }))),
+        el("div", { class: "sub" }, `${g.count} photos`),
+        el("div", { class: "group-row" }, input, save));
+      return card;
+    }));
+  } catch (e) {
+    list.replaceChildren(el("p", { class: "face-error" }, e.message));
+  }
+}
+
 $("#dlg-person").addEventListener("close", async () => {
   if ($("#dlg-person").returnValue !== "delete" || !openedPerson) return;
   if (!confirm(`Oublier ${openedPerson} ? Ses photos de référence seront effacées de cet ordinateur (rien n'est touché dans Drive).`)) return;
@@ -496,6 +538,7 @@ async function openReview(slug) {
   state.plan = plan; state.slug = slug;
   state.photos = plan.photos.slice();
   state.reserve = (plan.reserve || []).slice();
+  state.removed = [];
   $("#r-name").value = plan.album_name;
   const s = plan.stats || {};
   const wanted = plan.settings && plan.settings.count;
@@ -526,7 +569,9 @@ function renderReview(freshId) {
       class: "tile" + (p.id === freshId ? " fresh" : ""), onclick: () => openLightbox(p),
     },
       el("img", { src: thumb(p), alt: p.name, loading: "lazy" }),
-      el("button", { type: "button", class: "x", title: "Retirer cette photo", onclick: (e) => { e.stopPropagation(); removePhoto(p); } }, "✕"),
+      p.starred ? el("span", { class: "star", title: "Étoilée dans Drive" }, "★") : null,
+      el("button", { type: "button", class: "x", title: "Retirer cette photo", onclick: (e) => { e.stopPropagation(); askReason(p, e.currentTarget); } }, "✕"),
+      el("button", { type: "button", class: "swap", title: "Voir d'autres photos de ce moment", onclick: (e) => { e.stopPropagation(); showAlternatives(p, e.currentTarget); } }, "⇄"),
     ))));
   }
   const n = state.photos.length;
@@ -534,24 +579,67 @@ function renderReview(freshId) {
   $("#btn-apply").disabled = n === 0;
 }
 
-function removePhoto(p) {
+// --- petite fenêtre accrochée à une photo (raison du retrait, autres photos du moment)
+function popover(anchor, ...children) {
+  closePopover();
+  const box = el("div", { class: "popover", onclick: (e) => e.stopPropagation() }, ...children);
+  const r = anchor.getBoundingClientRect();
+  box.style.top = `${window.scrollY + r.bottom + 6}px`;
+  box.style.left = `${Math.max(8, Math.min(window.scrollX + r.right - 260, document.documentElement.clientWidth - 268))}px`;
+  document.body.append(box);
+  setTimeout(() => document.addEventListener("click", closePopover, { once: true }));
+}
+function closePopover() { document.querySelectorAll(".popover").forEach((x) => x.remove()); }
+
+const REASONS = [
+  ["pas-belle", "Pas belle (floue, sombre, ratée)"],
+  ["doublon", "Déjà une photo de ce moment"],
+  ["personnes", "Pas les bonnes personnes"],
+  ["gout", "Je ne l'aime pas"],
+];
+function askReason(p, anchor) {
+  popover(anchor, el("div", { class: "pop-title" }, "Pourquoi la retirer ? Albumia s'en souviendra."),
+    ...REASONS.map(([code, label]) => el("button", { type: "button", class: "pop-item", onclick: () => { closePopover(); removePhoto(p, code); } }, label)));
+}
+
+// autres photos du même moment (même jour, sinon même mois), les mieux notées d'abord
+function alternativesFor(p) {
+  const day = p.date.slice(0, 10);
+  const same = state.reserve.filter((x) => x.date.slice(0, 10) === day);
+  const month = state.reserve.filter((x) => monthKey(x.date) === monthKey(p.date) && !same.includes(x));
+  return [...same, ...month].slice(0, 3);
+}
+function showAlternatives(p, anchor) {
+  const alts = alternativesFor(p);
+  if (!alts.length) { toast("Pas d'autre bonne photo de ce moment."); return; }
+  popover(anchor, el("div", { class: "pop-title" }, "Remplacer par :"),
+    el("div", { class: "pop-alts" }, ...alts.map((a) => el("img", { src: thumb(a), alt: a.name, title: fmtDate(a.date),
+      onclick: () => { closePopover(); replacePhoto(p, a, "gout"); } }))));
+}
+
+function replacePhoto(p, replacement, reason) {
   const idx = state.photos.indexOf(p);
   if (idx < 0) return;
-  // remplaçante : la meilleure du même mois, sinon la meilleure tout court
-  let r = state.reserve.findIndex((x) => monthKey(x.date) === monthKey(p.date));
-  if (r < 0 && state.reserve.length) r = 0;
-  const replacement = r >= 0 ? state.reserve.splice(r, 1)[0] : null;
+  if (replacement) state.reserve.splice(state.reserve.indexOf(replacement), 1);
   state.photos.splice(idx, 1, ...(replacement ? [replacement] : []));
+  state.removed.push({ id: p.id, reason });
   renderReview(replacement && replacement.id);
-  toast(replacement ? "Photo remplacée par une autre." : "Photo retirée.", {
+  toast(replacement ? "Photo remplacée." : "Photo retirée.", {
     label: "Annuler",
     run: () => {
+      state.removed = state.removed.filter((r) => r.id !== p.id);
       const j = replacement ? state.photos.indexOf(replacement) : -1;
       if (j >= 0) { state.photos.splice(j, 1, p); state.reserve.unshift(replacement); }
       else state.photos.push(p);
       renderReview();
     },
   });
+}
+
+function removePhoto(p, reason) {
+  // remplaçante : la meilleure du même moment, sinon du même mois, sinon la meilleure tout court
+  const replacement = alternativesFor(p)[0] || state.reserve[0] || null;
+  replacePhoto(p, replacement, reason);
 }
 
 function openLightbox(p) {
@@ -573,7 +661,7 @@ async function applyAlbum(full) {
   const btn = $("#btn-apply");
   btn.disabled = true; btn.textContent = "Création en cours…";
   try {
-    const body = { slug: state.slug, ids: state.photos.map((p) => p.id), name: $("#r-name").value, full };
+    const body = { slug: state.slug, ids: state.photos.map((p) => p.id), name: $("#r-name").value, full, removed: state.removed };
     const job = await waitJob(await api("/api/apply", { method: "POST", body }), (j) => {
       if (j.total) btn.textContent = `Création… ${j.done} / ${j.total}`;
     });

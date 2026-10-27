@@ -7,8 +7,9 @@ si besoin (voir README, section « Ajuster »).
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 import numpy as np
 
@@ -24,16 +25,52 @@ DEFAULT_MATCH_THRESHOLD = 0.45
 LENIENT_MATCH_THRESHOLD = 0.38
 MATCH_MARGIN = 0.05
 MIN_FACE_AREA = 0.005             # visage < 0,5 % de la photo : fausse détection ou figurant
+MIN_SUBJECT_AREA = 0.01           # personne choisie plus petite que ça : elle n'est pas le sujet
+
+PRINT_MIN_SIDE = (800, 1500)      # côté court de l'original (px) : 0 → 1 de note « impression »
+STAR_BONUS = 0.12                 # photo étoilée dans Drive
+MOMENT_GAP_HOURS = 2              # plus de 2 h sans photo : un nouveau moment commence
+SHOT_TARGETS = {"gros plan": 0.4, "plan moyen": 0.4, "scène": 0.2}
+
+SCREENSHOT_RE = re.compile(r"screenshot|screen[ _-]?shot|capture d.?[eé]cran|^scr_", re.I)
+MESSAGING_RE = re.compile(r"^IMG-\d{8}-WA\d+|whatsapp|^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-", re.I)
 
 
 @dataclass
 class Weights:
-    sharpness: float = 0.30
-    faces: float = 0.22
-    smile: float = 0.14
-    eyes: float = 0.04                # détecteur d'yeux ouverts peu fiable : poids faible
-    exposure: float = 0.08
+    sharpness: float = 0.28
+    faces: float = 0.20
+    smile: float = 0.08               # détecteur de sourire approximatif (≈ 1 sur 2 juste)
+    eyes: float = 0.03                # détecteur d'yeux ouverts peu fiable : poids faible
+    frontal: float = 0.06             # regarde vers l'objectif
+    exposure: float = 0.07
+    resolution: float = 0.06          # assez grande pour un tirage
     bonus: float = 0.16
+
+
+def photo_kind(name: str, camera: str = "", width: int | None = None, height: int | None = None) -> str:
+    """« capture » (à écarter), « messagerie » (souvent trop petite) ou « photo »."""
+    if SCREENSHOT_RE.search(name or ""):
+        return "capture"
+    if not camera and MESSAGING_RE.search(name or ""):
+        return "messagerie"
+    if not camera and width and height and max(width, height) / max(1, min(width, height)) >= 1.95:
+        return "capture"  # format d'écran de téléphone, sans appareil photo
+    return "photo"
+
+
+def print_score(width: int | None, height: int | None) -> float:
+    if not width or not height:
+        return 1.0  # inconnu (fréquent pour les RAW) : on ne pénalise pas
+    lo, hi = PRINT_MIN_SIDE
+    return _clip((min(width, height) - lo) / (hi - lo))
+
+
+def shot_type(feat: dict, focus: list[dict]) -> str:
+    if not focus:
+        return "scène"
+    area = max(f["box"][2] * f["box"][3] for f in focus) / float(feat["w"] * feat["h"])
+    return "gros plan" if area >= 0.06 else "plan moyen" if area >= 0.015 else "scène"
 
 
 def _clip(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -77,9 +114,18 @@ def subject_sharpness(feat: dict, faces: list[dict] | None = None) -> float:
 
 
 def face_labels(
-    faces: list[dict], refs: dict[str, list[float]], threshold: float, margin: float = MATCH_MARGIN
+    faces: list[dict],
+    refs: dict[str, list[float]],
+    threshold: float,
+    margin: float = MATCH_MARGIN,
+    allowed: set[str] | None = None,
 ) -> list[str | None]:
-    """Pour chaque visage : la personne reconnue, ou None (inconnu ou trop ambigu)."""
+    """Pour chaque visage : la personne reconnue, ou None (inconnu ou trop ambigu).
+
+    `allowed` limite les candidats (ex. : pas Arié sur une photo prise avant sa naissance).
+    """
+    if allowed is not None:
+        refs = {k: v for k, v in refs.items() if k in allowed}
     if not faces or not refs:
         return [None] * len(faces)
     names = list(refs)
@@ -115,6 +161,7 @@ class Candidate:
     parts: dict[str, float] = field(default_factory=dict)
     local_score: float = 0.0
     note: str = ""
+    meta: dict = field(default_factory=dict)   # starred, kind, shot, width, height
 
 
 def local_score(
@@ -124,32 +171,38 @@ def local_score(
     weights: Weights = Weights(),
     labels_per_face: list[str | None] | None = None,
     targets: list[str] = (),
+    meta: dict | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Note de 0 à 1. Avec `targets`, cadrage, netteté et sourire se jugent sur les visages de ces
     personnes (et non sur l'adulte en gros plan d'un selfie)."""
+    meta = meta or {}
     faces = real_faces(feat)
     focus = faces
     if targets and labels_per_face is not None:
         focus = [f for f, label in zip(faces, labels_per_face) if label in targets] or faces
+    framing = faces_score(focus, feat["w"], feat["h"], total=len(faces))
+    if focus and max(focus, key=lambda f: f["box"][2] * f["box"][3]).get("edge"):
+        framing *= 0.6  # visage principal coupé par le bord
+    resolution = print_score(meta.get("width"), meta.get("height"))
+    if meta.get("kind") == "messagerie":
+        resolution *= 0.5
     parts = {
         "sharpness": subject_sharpness(feat, focus),
-        "faces": faces_score(focus, feat["w"], feat["h"], total=len(faces)),
+        "faces": framing,
         "smile": float(np.mean([f["smile"] for f in focus])) if focus else 0.0,
         "eyes": float(np.mean([f["eyes"] for f in focus])) if focus else 0.0,
+        "frontal": float(np.mean([f.get("frontal", 1.0) for f in focus])) if focus else 0.5,
         "exposure": exposure_score(feat["mean"], feat["clip_low"], feat["clip_high"]),
+        "resolution": resolution,
     }
-    w = {
-        "sharpness": weights.sharpness,
-        "faces": weights.faces,
-        "smile": weights.smile,
-        "eyes": weights.eyes,
-        "exposure": weights.exposure,
-    }
+    w = {k: getattr(weights, k) for k in parts}
     if bonus_labels:
         parts["bonus"] = sum(1 for b in bonus_labels if b in labels) / len(bonus_labels)
         w["bonus"] = weights.bonus
     total_w = sum(w.values())
     score = sum(parts[k] * w[k] for k in w) / total_w
+    if meta.get("starred"):
+        score = min(1.0, score + STAR_BONUS)
     return score, parts
 
 
@@ -199,16 +252,18 @@ def dedupe_bursts(
     return sorted(best.values(), key=lambda c: c.when)
 
 
-def allocate(counts: dict, total: int) -> dict:
+def allocate(counts: dict, total: int, caps: dict | None = None) -> dict:
     """Répartit `total` places entre les périodes, au prorata de la racine carrée de leur taille.
 
     La racine carrée évite qu'un mois à 800 photos écrase un mois à 40 photos.
+    `caps` : nombre maximal de places par période (par défaut sa taille).
     """
-    total = min(total, sum(counts.values()))
+    caps = caps or counts
+    total = min(total, sum(caps.values()))
     alloc = {k: 0 for k in counts}
     remaining = total
     while remaining > 0:
-        active = [k for k in counts if alloc[k] < counts[k]]
+        active = [k for k in counts if alloc[k] < caps[k]]
         if not active:
             break
         weights = {k: math.sqrt(counts[k]) for k in active}
@@ -216,7 +271,7 @@ def allocate(counts: dict, total: int) -> dict:
         quotas = {k: remaining * weights[k] / wsum for k in active}
         given = 0
         for k in active:
-            n = min(int(quotas[k]), counts[k] - alloc[k])
+            n = min(int(quotas[k]), caps[k] - alloc[k])
             alloc[k] += n
             given += n
         left = remaining - given
@@ -225,35 +280,102 @@ def allocate(counts: dict, total: int) -> dict:
             for k in by_fraction:
                 if left == 0:
                     break
-                if alloc[k] < counts[k]:
+                if alloc[k] < caps[k]:
                     alloc[k] += 1
                     left -= 1
         remaining = left
     return alloc
 
 
-def select_spread(items: list[Candidate], n: int, max_per_day: int = 2) -> list[Candidate]:
-    """Choisit n photos en couvrant toute la période (par mois), meilleure note d'abord.
+def moments(items: list[Candidate], gap_hours: float = MOMENT_GAP_HOURS) -> list[list[Candidate]]:
+    """Regroupe les photos en moments : une coupure de plus de `gap_hours` sépare deux moments."""
+    out: list[list[Candidate]] = []
+    for c in sorted(items, key=lambda c: c.when):
+        if out and (c.when - out[-1][-1].when).total_seconds() <= gap_hours * 3600:
+            out[-1].append(c)
+        else:
+            out.append([c])
+    return out
 
-    Au plus `max_per_day` photos d'une même journée (même scène sous d'autres angles), sauf s'il
-    n'y a pas assez d'autres photos dans le mois pour remplir sa part.
+
+def moment_cap(size: int) -> int:
+    """Un grand moment (beaucoup de photos prises) mérite plus de place qu'un instant isolé."""
+    return 1 if size < 5 else 2 if size < 15 else 3
+
+
+def similarity(a: Candidate, b: Candidate) -> float:
+    """0 à 1 : même décor, mêmes couleurs, même cadrage."""
+    visual = max(0.0, 1.0 - hamming_hex(a.feat["dhash"], b.feat["dhash"]) / 32.0)
+    ha, hb = a.feat.get("hues"), b.feat.get("hues")
+    if not ha or not hb:
+        return visual
+    return 0.5 * visual + 0.5 * float(sum(min(x, y) for x, y in zip(ha, hb)))
+
+
+def _share(chosen: list[Candidate], key, value) -> float:
+    return sum(1 for o in chosen if key(o) == value) / len(chosen) if chosen else 0.0
+
+
+def diversity_penalty(c: Candidate, chosen: list[Candidate], strength: float = 0.25) -> float:
+    """Pénalité pour une photo trop semblable à celles déjà retenues (scène, plan, personnes)."""
+    if not chosen:
+        return 0.0
+    sim = max(similarity(c, o) for o in chosen)
+    penalty = strength * max(0.0, sim - 0.55) / 0.45
+    if len(chosen) >= 4:
+        shot = c.meta.get("shot", "scène")
+        penalty += 0.06 * max(0.0, _share(chosen, lambda o: o.meta.get("shot", "scène"), shot) - SHOT_TARGETS.get(shot, 0.4))
+        portrait = c.feat["h"] > c.feat["w"]
+        penalty += 0.03 * max(0.0, _share(chosen, lambda o: o.feat["h"] > o.feat["w"], portrait) - 0.65)
+        who = frozenset(c.labels)
+        penalty += 0.04 * max(0.0, _share(chosen, lambda o: frozenset(o.labels), who) - 0.5)
+    return penalty
+
+
+def age_bucket(birth: date):
+    """Tranches d'âge : par trimestre la 1re année, par semestre jusqu'à 3 ans, puis par an."""
+    def key(c: Candidate):
+        months = (c.when.year - birth.year) * 12 + c.when.month - birth.month - (c.when.day < birth.day)
+        if months < 0:
+            return (-1, 0)
+        if months < 12:
+            return (0, months // 3)
+        if months < 36:
+            return (1, months // 6)
+        return (2, months // 12)
+    return key
+
+
+def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25) -> list[Candidate]:
+    """Choisit n photos qui racontent la période.
+
+    1. Les places sont réparties entre les périodes (mois, ou tranches d'âge avec `bucket`).
+    2. Dans chaque période, chaque moment a un plafond : 1 photo pour un instant isolé, jusqu'à 3
+       pour un grand moment.
+    3. On prend d'abord la meilleure note, en pénalisant ce qui ressemble à ce qui est déjà choisi.
     """
-    months: dict[tuple[int, int], list[Candidate]] = {}
+    bucket = bucket or (lambda c: (c.when.year, c.when.month))
+    groups: dict = {}
     for c in items:
-        months.setdefault((c.when.year, c.when.month), []).append(c)
-    alloc = allocate({k: len(v) for k, v in months.items()}, n)
+        groups.setdefault(bucket(c), []).append(c)
+    alloc = allocate({k: len(v) for k, v in groups.items()}, n)
     chosen: list[Candidate] = []
-    for key, quota in alloc.items():
-        ranked = sorted(months[key], key=lambda c: c.score, reverse=True)
-        per_day: dict = {}
-        picked: list[Candidate] = []
-        for c in ranked:
-            if len(picked) == quota:
+    for key in sorted(groups):
+        quota = alloc[key]
+        if not quota:
+            continue
+        ms = moments(groups[key])
+        left = {i: min(len(m), moment_cap(len(m))) for i, m in enumerate(ms)}
+        if sum(left.values()) < quota:  # pas assez de moments : on relâche le plafond
+            left = {i: len(m) for i, m in enumerate(ms)}
+        moment_of = {id(c): i for i, m in enumerate(ms) for c in m}
+        pool = [c for c in groups[key]]
+        for _ in range(quota):
+            open_ = [c for c in pool if left[moment_of[id(c)]] > 0]
+            if not open_:
                 break
-            if per_day.get(c.when.date(), 0) < max_per_day:
-                per_day[c.when.date()] = per_day.get(c.when.date(), 0) + 1
-                picked.append(c)
-        if len(picked) < quota:  # pas assez de journées différentes : on complète
-            picked += [c for c in ranked if c not in picked][: quota - len(picked)]
-        chosen.extend(picked)
+            best = max(open_, key=lambda c: c.score - diversity_penalty(c, chosen, diversity))
+            chosen.append(best)
+            pool.remove(best)
+            left[moment_of[id(best)]] -= 1
     return sorted(chosen, key=lambda c: c.when)

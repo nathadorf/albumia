@@ -42,7 +42,7 @@ IMAGE_EXT = {
 }
 
 LIST_FIELDS = (
-    "nextPageToken, files(id,name,mimeType,size,thumbnailLink,createdTime,modifiedTime,"
+    "nextPageToken, files(id,name,mimeType,size,thumbnailLink,createdTime,modifiedTime,starred,"
     "imageMediaMetadata(time,width,height,cameraModel))"
 )
 
@@ -56,8 +56,10 @@ class DriveFile:
     when: datetime            # date de prise de vue (EXIF) sinon date de modification
     date_source: str          # "exif" ou "modified"
     modified: str             # chaîne RFC3339, sert à invalider le cache
-    width: int | None = None
+    width: int | None = None   # dimensions de l'original (pour juger l'impression)
     height: int | None = None
+    camera: str = ""           # vide : capture d'écran, image reçue par messagerie…
+    starred: bool = False      # étoilée dans Drive : un choix de la personne
 
     @classmethod
     def from_api(cls, f: dict) -> "DriveFile":
@@ -74,6 +76,8 @@ class DriveFile:
             modified=f.get("modifiedTime", ""),
             width=meta.get("width"),
             height=meta.get("height"),
+            camera=meta.get("cameraModel") or "",
+            starred=bool(f.get("starred")),
         )
 
 

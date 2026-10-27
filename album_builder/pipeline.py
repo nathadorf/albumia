@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import scoring, vision
+from . import people, scoring, vision
 from .errors import AlbumError, Cancelled
 from .report import slugify, write_plan
 
@@ -50,7 +50,7 @@ class BuildParams:
     describe: str = ""
     weights: scoring.Weights = field(default_factory=scoring.Weights)
     workers: int = 6
-    reserve: int = 30                         # photos de remplacement proposées à la relecture
+    reserve: int = 60                         # photos de remplacement proposées à la relecture
 
 
 class Reporter:
@@ -190,26 +190,41 @@ def build_plan(
         rep.note(f"{failed} photo(s) sans aperçu Drive, ignorées.")
 
     rep.step(4, "Choix des meilleures photos…")
+    births = people.births(refs_dir)
     cands: list[scoring.Candidate] = []
-    rejected = {"sans analyse": 0, "floue": 0, "personne absente": 0, "sans visage": 0}
+    rejected = {"sans analyse": 0, "pas une photo": 0, "floue": 0, "personne absente": 0,
+                "personne trop petite": 0, "sans visage": 0}
     for f in files:
         entry = cache.get(f.id)
         if not entry:
             rejected["sans analyse"] += 1
             continue
         feat = entry["feat"]
-        per_face = scoring.face_labels(scoring.real_faces(feat), refs, params.match_threshold)
+        faces = scoring.real_faces(feat)
+        # personne ne peut apparaître sur une photo prise avant sa naissance
+        allowed = {n for n in refs if n not in births or births[n] <= f.when.date()}
+        per_face = scoring.face_labels(faces, refs, params.match_threshold, allowed=allowed)
         labels = {label for label in per_face if label}
+        kind = scoring.photo_kind(f.name, f.camera, f.width, f.height)
         c = scoring.Candidate(f.id, f.name, f.when, feat, labels)
+        focus = [x for x, label in zip(faces, per_face) if label in wanted] if wanted else faces
+        c.meta = {"starred": f.starred, "kind": kind, "width": f.width, "height": f.height,
+                  "shot": scoring.shot_type(feat, focus or faces)}
         c.local_score, c.parts = scoring.local_score(
-            feat, labels, params.bonus, params.weights, per_face, wanted
+            feat, labels, params.bonus, params.weights, per_face, wanted, c.meta
         )
         c.score = c.local_score
-        if c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
+        must_faces = [x for x, label in zip(faces, per_face) if label in params.must]
+        area = float(feat["w"] * feat["h"]) or 1.0
+        if kind == "capture":
+            rejected["pas une photo"] += 1
+        elif c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
             rejected["floue"] += 1
         elif params.must and not all(m in labels for m in params.must):
             rejected["personne absente"] += 1
-        elif params.faces_only and not scoring.real_faces(feat):
+        elif must_faces and max(x["box"][2] * x["box"][3] for x in must_faces) / area < scoring.MIN_SUBJECT_AREA:
+            rejected["personne trop petite"] += 1
+        elif params.faces_only and not faces:
             rejected["sans visage"] += 1
         else:
             cands.append(c)
@@ -240,7 +255,12 @@ def build_plan(
                 c.note = note
         pool = top
 
-    selected = scoring.select_spread(pool, params.count)
+    # album centré sur un enfant dont on connaît la date de naissance : réparti par âge
+    main = next((m for m in params.must if m in births), None)
+    bucket = scoring.age_bucket(births[main]) if main else None
+    if main:
+        rep.note(f"Répartition selon l'âge de {main}.")
+    selected = scoring.select_spread(pool, params.count, bucket=bucket)
     chosen = {c.file_id for c in selected}
     reserve = sorted((c for c in pool if c.file_id not in chosen), key=lambda c: c.score, reverse=True)
     reserve = reserve[: params.reserve]

@@ -213,3 +213,30 @@ dialog::backdrop { background: rgba(40, 30, 25, .45); }
   .hero { padding: 24px; }
   .review-head { flex-direction: column; }
 }
+
+/* --- v3 : raisons, alternatives, groupes de visages --- */
+.tile .swap {
+  position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; border-radius: 50%; border: 0;
+  background: rgba(0,0,0,.55); color: #fff; font-size: 15px; cursor: pointer; opacity: 0; transition: opacity .15s;
+}
+.tile:hover .swap, .tile .swap:focus { opacity: 1; }
+@media (hover: none) { .tile .swap { opacity: 1; } }
+.tile .star { position: absolute; bottom: 6px; left: 8px; color: #ffd257; font-size: 18px; text-shadow: 0 1px 3px #0008; }
+.popover {
+  position: absolute; z-index: 40; width: 260px; background: var(--card); border-radius: 14px; padding: 8px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.2); border: 1px solid var(--line);
+}
+.pop-title { font-size: 13px; color: var(--muted); padding: 4px 8px 6px; }
+.pop-item { display: block; width: 100%; text-align: left; border: 0; background: none; font: inherit; font-size: 14px; padding: 8px; border-radius: 8px; cursor: pointer; color: var(--ink); }
+.pop-item:hover { background: var(--accent-soft); }
+.pop-alts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 4px; }
+.pop-alts img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; cursor: pointer; }
+.pop-alts img:hover { outline: 3px solid var(--accent); }
+.field.birth { display: block; margin: 12px 0 4px; }
+.groups { display: grid; gap: 14px; margin-top: 14px; max-height: 60vh; overflow: auto; }
+.group { border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
+.group-faces { display: flex; gap: 8px; margin-bottom: 6px; }
+.group-faces img { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; }
+.group-row { display: flex; gap: 8px; margin-top: 8px; }
+.group-row input { padding: 7px 10px; }
+.ok-line { color: var(--ok); margin: 0; }

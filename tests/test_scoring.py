@@ -151,7 +151,8 @@ class AllocationTests(unittest.TestCase):
         items = []
         for m in range(1, 13):
             for k in range(10):
-                items.append(cand(m * 100 + k, datetime(2026, m, 1 + k), k / 10))
+                h = f"{(m * 100 + k) * 0x9E3779B97F4A7C15 % 2**64:016x}"  # scènes toutes différentes
+                items.append(cand(m * 100 + k, datetime(2026, m, 1 + k), k / 10, dhash=h))
         chosen = scoring.select_spread(items, 24)
         self.assertEqual(len(chosen), 24)
         self.assertEqual({c.when.month for c in chosen}, set(range(1, 13)))

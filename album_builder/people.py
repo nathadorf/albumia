@@ -5,9 +5,11 @@ lui donne un prénom, et le visage recadré est rangé dans refs/<prénom>/.
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import uuid
+from datetime import date
 from pathlib import Path
 
 from .errors import AlbumError
@@ -34,8 +36,38 @@ def list_people(refs_dir: Path) -> list[dict]:
     people = []
     for d in sorted((p for p in refs_dir.iterdir() if p.is_dir()), key=lambda p: p.name.lower()):
         photos = _photos(d)
-        people.append({"name": d.name, "photos": [p.name for p in photos]})
+        birth = _info(d).get("birth")
+        people.append({"name": d.name, "photos": [p.name for p in photos], "birth": birth})
     return people
+
+
+def _info(folder: Path) -> dict:
+    try:
+        return json.loads((folder / "person.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def set_birth(refs_dir: Path, name: str, birth: str | None) -> None:
+    """Date de naissance (AAAA-MM-JJ) ou None pour l'effacer."""
+    folder = find_person_dir(refs_dir, name)
+    if not folder.exists():
+        raise AlbumError(f"Je ne connais pas encore {name}.", code="unknown_person")
+    if birth:
+        try:
+            date.fromisoformat(birth)
+        except ValueError:
+            raise AlbumError("Date de naissance non comprise (format attendu : AAAA-MM-JJ).", code="bad_date")
+    info = {**_info(folder), "birth": birth or None}
+    (folder / "person.json").write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
+
+
+def births(refs_dir: Path) -> dict[str, date]:
+    out = {}
+    for p in list_people(refs_dir):
+        if p["birth"]:
+            out[p["name"]] = date.fromisoformat(p["birth"])
+    return out
 
 
 def find_person_dir(refs_dir: Path, name: str) -> Path:
@@ -61,7 +93,7 @@ def remove_photo(refs_dir: Path, name: str, photo: str) -> None:
     target = (folder / Path(photo).name)
     if target.exists():
         target.unlink()
-    if folder.exists() and not _photos(folder):
+    if folder.exists() and not _photos(folder) and not _info(folder).get("birth"):
         shutil.rmtree(folder)
 
 

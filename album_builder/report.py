@@ -24,6 +24,8 @@ def _item(c) -> dict:
                 "parts": {k: round(v, 2) for k, v in c.parts.items()},
                 "people": sorted(c.labels),
                 "note": c.note,
+                "starred": bool(c.meta.get("starred")),
+                "shot": c.meta.get("shot", ""),
             }
 
 
