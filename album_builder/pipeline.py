@@ -140,7 +140,9 @@ def build_plan(
     cache = _load_cache(features_path)
     todo = [
         f for f in files
-        if cache.get(f.id, {}).get("mod") != f.modified or not (thumbs_dir / f"{f.id}.jpg").exists()
+        if cache.get(f.id, {}).get("mod") != f.modified
+        or cache[f.id].get("v") != vision.FEATURES_VERSION
+        or not (thumbs_dir / f"{f.id}.jpg").exists()
     ]
     rep.note(f"{len(files) - len(todo)} déjà analysées, {len(todo)} à analyser.")
 
@@ -171,7 +173,7 @@ def build_plan(
                     if not cancel.is_set():
                         failed += 1
                 else:
-                    cache[fid] = {"mod": by_id[fid].modified, "feat": feat}
+                    cache[fid] = {"mod": by_id[fid].modified, "v": vision.FEATURES_VERSION, "feat": feat}
                 rep.advance(done, len(todo))
                 if done % 200 == 0:
                     _save_cache(features_path, cache)
@@ -196,15 +198,18 @@ def build_plan(
             rejected["sans analyse"] += 1
             continue
         feat = entry["feat"]
-        labels = scoring.match_labels(feat["faces"], refs, params.match_threshold)
+        per_face = scoring.face_labels(scoring.real_faces(feat), refs, params.match_threshold)
+        labels = {label for label in per_face if label}
         c = scoring.Candidate(f.id, f.name, f.when, feat, labels)
-        c.local_score, c.parts = scoring.local_score(feat, labels, params.bonus, params.weights)
+        c.local_score, c.parts = scoring.local_score(
+            feat, labels, params.bonus, params.weights, per_face, wanted
+        )
         c.score = c.local_score
         if c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
             rejected["floue"] += 1
         elif params.must and not all(m in labels for m in params.must):
             rejected["personne absente"] += 1
-        elif params.faces_only and not feat["faces"]:
+        elif params.faces_only and not scoring.real_faces(feat):
             rejected["sans visage"] += 1
         else:
             cands.append(c)

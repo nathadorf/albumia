@@ -268,12 +268,7 @@ def detect_faces():
                 continue
             token = uuid.uuid4().hex
             _pending_faces[token] = buf.tobytes()
-            guess = ""
-            if known:
-                sims = {name: float(sum(a * b for a, b in zip(face["emb"], ref))) for name, ref in known.items()}
-                best = max(sims, key=sims.get)
-                if sims[best] >= scoring.DEFAULT_MATCH_THRESHOLD:
-                    guess = best
+            guess = scoring.face_labels([face], known, scoring.DEFAULT_MATCH_THRESHOLD)[0] or ""
             items.append({
                 "token": token, "guess": guess,
                 "preview": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode(),
@@ -347,7 +342,7 @@ def build():
         name=name, folders=[folder], count=max(1, min(intent.MAX_COUNT, int(b.get("count") or 50))),
         date_from=_date(b.get("date_from")), date_to=_date(b.get("date_to"), end=True),
         must=list(b.get("must") or []), bonus=list(b.get("bonus") or []),
-        match_threshold=0.30 if b.get("lenient") else scoring.DEFAULT_MATCH_THRESHOLD,
+        match_threshold=scoring.LENIENT_MATCH_THRESHOLD if b.get("lenient") else scoring.DEFAULT_MATCH_THRESHOLD,
         faces_only=bool(b.get("faces_only")), use_claude=use_claude,
         describe=b.get("prompt", ""), weights=weights,
     )

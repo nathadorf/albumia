@@ -138,6 +138,6 @@ python -m album_builder --name "Eydel & frères 2026" --count 50 \
 python -m album_builder --apply-plan out/eydel-freres-2026/plan.json
 ```
 
-Options utiles : `--from/--to AAAA-MM-JJ`, `--match-threshold 0.30` (reconnaissance moins
+Options utiles : `--from/--to AAAA-MM-JJ`, `--match-threshold 0.38` (reconnaissance moins
 stricte), `--faces-only`, `--no-recursive`, `--copy` (copies au lieu de raccourcis : consomme du
 quota), `--use-claude --describe "…"`.

@@ -28,6 +28,8 @@ SFACE_URLS = (
     "https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx",
 )
 MIN_FACE_PX = 20
+# À augmenter quand `analyze` change : les photos déjà en cache sont alors réanalysées.
+FEATURES_VERSION = 2
 FACE_CROP = 112
 
 
@@ -107,7 +109,8 @@ class FaceEngine:
             return 0.0
         scale = 96.0 / w
         roi = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        found = self.smile_cascade.detectMultiScale(roi, scaleFactor=1.6, minNeighbors=20, minSize=(24, 12))
+        # réglages testés sur 88 visages réels : 1.6 n'en trouvait aucun
+        found = self.smile_cascade.detectMultiScale(roi, scaleFactor=1.1, minNeighbors=20, minSize=(24, 12))
         return 1.0 if len(found) else 0.0
 
     def _eyes(self, face_gray: np.ndarray) -> float:

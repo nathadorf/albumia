@@ -66,6 +66,25 @@ class MatchingTests(unittest.TestCase):
         found = scoring.match_labels(faces, refs, 0.8)
         self.assertEqual(found, {"fille"})
 
+    def test_lookalike_siblings_are_not_both_matched(self):
+        refs = {"eydel": [1.0, 0.0], "arie": [0.8, 0.6]}       # similarité 0,8 entre les deux
+        ambiguous = face(emb=[0.949, 0.316])                    # 0,95 et 0,95 : on ne sait pas
+        clear = face(emb=[1.0, 0.0])                            # 1,0 contre 0,8
+        self.assertEqual(scoring.face_labels([ambiguous, clear], refs, 0.45), [None, "eydel"])
+        self.assertEqual(scoring.match_labels([ambiguous, clear], refs, 0.45), {"eydel"})
+
+    def test_tiny_false_face_is_ignored(self):
+        f = feat(faces=[face(box=(10, 10, 15, 15)), face()])
+        self.assertEqual(len(scoring.real_faces(f)), 1)
+
+    def test_framing_judged_on_target_child_not_on_adult(self):
+        adult = face(box=(0, 0, 500, 500))
+        child = face(box=(800, 600, 100, 100))
+        f = feat(faces=[adult, child])
+        _, generic = scoring.local_score(f, {"eydel"}, [])
+        _, focused = scoring.local_score(f, {"eydel"}, [], labels_per_face=[None, "eydel"], targets=["eydel"])
+        self.assertLess(focused["faces"], generic["faces"])
+
     def test_no_refs_or_faces(self):
         self.assertEqual(scoring.match_labels([], {"a": [1.0]}, 0.3), set())
         self.assertEqual(scoring.match_labels([face(emb=[1.0])], {}, 0.3), set())
@@ -75,14 +94,26 @@ class DedupeTests(unittest.TestCase):
     def test_burst_keeps_best_only(self):
         t = datetime(2026, 5, 1, 12, 0, 0)
         burst = [cand(i, t + timedelta(seconds=i * 2), s) for i, s in enumerate([0.4, 0.9, 0.5])]
-        other = cand(9, t + timedelta(hours=3), 0.3)
+        other = cand(9, t + timedelta(hours=3), 0.3, dhash="f" * 16)
         kept = scoring.dedupe_bursts(burst + [other])
         self.assertEqual({c.file_id for c in kept}, {"id1", "id9"})
 
     def test_similar_hash_far_in_time_is_kept(self):
         t = datetime(2026, 5, 1)
-        a, b = cand(1, t, 0.5), cand(2, t + timedelta(days=2), 0.6)
+        a = cand(1, t, 0.5)
+        b = cand(2, t + timedelta(days=2), 0.6, dhash="000000000000003f")  # 6 bits d'écart
         self.assertEqual(len(scoring.dedupe_bursts([a, b])), 2)
+
+    def test_identical_copy_far_in_time_is_removed(self):
+        t = datetime(2023, 5, 1)
+        a, b = cand(1, t, 0.5), cand(2, t + timedelta(days=400), 0.6)  # même image, recopiée en 2024
+        self.assertEqual([c.file_id for c in scoring.dedupe_bursts([a, b])], ["id2"])
+
+    def test_same_scene_within_fifteen_minutes(self):
+        t = datetime(2026, 5, 1, 12)
+        a = cand(1, t, 0.5)
+        b = cand(2, t + timedelta(minutes=10), 0.6, dhash="00000000000003ff")  # 10 bits d'écart
+        self.assertEqual(len(scoring.dedupe_bursts([a, b])), 1)
 
     def test_close_in_time_but_different_scene_is_kept(self):
         t = datetime(2026, 5, 1)
