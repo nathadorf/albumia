@@ -294,7 +294,7 @@ async function openGroups() {
     const groups = await api("/api/face-groups");
     if (!groups.length) { list.replaceChildren(el("p", { class: "hint" }, "Je ne trouve pas de nouveau visage : tout le monde est déjà connu.")); return; }
     list.replaceChildren(...groups.map((g) => {
-      const input = el("input", { type: "text", list: "known-names", placeholder: "Qui est-ce ?" });
+      const input = el("input", { type: "text", list: "known-names", placeholder: "Qui est-ce ?", value: g.guess || "" });
       const save = el("button", { type: "button", class: "btn primary small", onclick: async () => {
         if (!input.value.trim()) { input.focus(); return; }
         save.disabled = true;
@@ -304,10 +304,11 @@ async function openGroups() {
           card.replaceChildren(el("p", { class: "ok-line" }, `✓ ${res.saved} visages ajoutés à ${input.value.trim()}`));
         } catch (e) { toast(e.message); save.disabled = false; }
       } }, "Enregistrer");
+      const skip = el("button", { type: "button", class: "btn small", onclick: () => card.remove() }, "Pas de la famille");
       const card = el("div", { class: "group" },
         el("div", { class: "group-faces" }, ...g.previews.map((src) => el("img", { src, alt: "" }))),
-        el("div", { class: "sub" }, `${g.count} photos`),
-        el("div", { class: "group-row" }, input, save));
+        el("div", { class: "sub" }, `${g.count} photos` + (g.period ? `, ${g.period}` : "") + (g.guess ? ` : peut-être ${g.guess} ?` : "")),
+        el("div", { class: "group-row" }, input, save, skip));
       return card;
     }));
   } catch (e) {

@@ -324,29 +324,60 @@ def face_groups():
         raise AlbumError("Prépare d'abord un album : je regroupe ensuite les visages de tes photos.",
                          code="no_analysis")
     try:
-        known = vision.build_references(vision.get_engine(ROOT / "models"), REFS) if REFS.exists() else {}
+        ref_photos = vision.reference_embeddings(vision.get_engine(ROOT / "models"), REFS)
     except AlbumError:
-        known = {}
+        ref_photos = {}
+    dates, births = people.photo_dates(REFS), people.births(REFS)
+    ref_sets = {n: [(e, dates.get(n, {}).get(ph)) for ph, e in v] for n, v in ref_photos.items()}
+    by_month: dict = {}
+
+    def known_at(when: date):
+        key = (when.year, when.month)
+        if key not in by_month:
+            by_month[key] = scoring.refs_at(ref_sets, births, when.replace(day=15))
+        return by_month[key]
+
     faces = []
     for fid, entry in cache.items():
         feat = entry["feat"]
+        when = date.fromisoformat(entry["when"]) if entry.get("when") else None
         real = scoring.real_faces(feat)
-        labels = scoring.face_labels(real, known, scoring.DEFAULT_MATCH_THRESHOLD)
+        known = known_at(when) if when else {n: vision.mean_embedding([e for e, _ in v]) for n, v in ref_sets.items()}
+        allowed = {n for n in known if not (when and n in births and births[n] > when)}
+        labels = scoring.face_labels(real, known, scoring.DEFAULT_MATCH_THRESHOLD, allowed=allowed)
         for face, label in zip(real, labels):
             if "emb" in face and not label:
                 faces.append({"file": fid, "box": face["box"], "w": feat["w"], "when": entry.get("when"),
                               "size": face["box"][2] * face["box"][3], "emb": np.array(face["emb"])})
     faces.sort(key=lambda f: f["size"], reverse=True)
+
+    # un enfant change vite : on regroupe par semestre (Arié bébé et Arié à 2 ans sont deux groupes)
+    def semester(f):
+        return (int(f["when"][:4]), 1 if int(f["when"][5:7]) <= 6 else 2) if f.get("when") else (0, 0)
+
     clusters: list[dict] = []
-    for f in faces[:3000]:
-        best = max(clusters, key=lambda c: float(c["center"] @ f["emb"]), default=None)
-        if best is not None and float(best["center"] @ f["emb"]) >= 0.6:
+    centers: dict = {}
+    for f in faces[:6000]:
+        key = semester(f)
+        group = [c for c in clusters if c["key"] == key]
+        sims = np.array([float(c["center"] @ f["emb"]) for c in group])
+        if len(group) and sims.max() >= 0.6:
+            best = group[int(sims.argmax())]
             best["items"].append(f)
             center = best["center"] * (len(best["items"]) - 1) + f["emb"]
             best["center"] = center / (np.linalg.norm(center) or 1.0)
         else:
-            clusters.append({"center": f["emb"], "items": [f]})
-    clusters = sorted((c for c in clusters if len(c["items"]) >= 3), key=lambda c: len(c["items"]), reverse=True)[:8]
+            clusters.append({"key": key, "center": f["emb"], "items": [f]})
+    clusters = sorted((c for c in clusters if len(c["items"]) >= 3), key=lambda c: len(c["items"]), reverse=True)[:30]
+    for c in clusters:  # qui ça pourrait être, à cet âge-là (jamais quelqu'un qui n'était pas encore né)
+        year, half = c["key"]
+        c["period"] = f"{'janvier-juin' if half == 1 else 'juillet-décembre'} {year}" if year else ""
+        when = date(year, 4 if half == 1 else 10, 1) if year else None
+        known = known_at(when) if when else {}
+        options = [(float(np.dot(c["center"], v)), n) for n, v in known.items()
+                   if not (n in births and when and births[n] > when)]
+        best = max(options, default=(0.0, ""))
+        c["guess"] = best[1] if best[0] >= 0.30 else ""
     _face_groups.clear()
     out = []
     for c in clusters:
@@ -359,7 +390,8 @@ def face_groups():
                 ok, buf = cv2.imencode(".jpg", vision.resize_max(crop, 160), [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if ok:
                     previews.append("data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode())
-        out.append({"id": gid, "count": len(c["items"]), "previews": previews})
+        out.append({"id": gid, "count": len(c["items"]), "previews": previews,
+                    "period": c["period"], "guess": c["guess"]})
     return jsonify(out)
 
 
