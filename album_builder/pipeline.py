@@ -229,6 +229,7 @@ def build_plan(
     rep.step(1, "Recherche des photos dans Drive…")
     files = list(client.iter_images(folder_ids, recursive=params.recursive))
     listed = len(files)
+    span = (min(f.when for f in files), max(f.when for f in files)) if files else None
     lo, hi = params.date_from, params.date_to
     files = [f for f in files if (lo is None or f.when >= lo) and (hi is None or f.when < hi)]
     from_modified = sum(1 for f in files if f.date_source == "modified")
@@ -239,7 +240,9 @@ def build_plan(
         raise AlbumError("Je n'ai trouvé aucune photo dans ce dossier Drive.", code="empty_folder")
     if not files:
         raise AlbumError(
-            f"Le dossier contient {listed} photos, mais aucune dans la période demandée.",
+            f"Le dossier contient {listed} photos, mais aucune dans la période demandée. "
+            f"Elles vont du {span[0]:%d/%m/%Y} au {span[1]:%d/%m/%Y} : ajoute l'année "
+            "dans ta description (par exemple « Souccot 2025 ») ou corrige les dates.",
             code="empty_period",
         )
 
