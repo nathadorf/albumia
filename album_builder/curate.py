@@ -23,6 +23,7 @@ automatique à une sélection faite à la main.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 from collections import Counter
@@ -55,6 +56,7 @@ ADULT_ALONE_PENALTY = 0.12
 WIDE_SHARE = 0.25                     # plans larges : un quart de l'album au plus
 SCENE_SHARE = 0.08                    # une même scène (piscine…) : 8 % de l'album, 2 photos au moins
 SCENE_CAP_MIN = 2
+TITLE_SCENE_SHARE = 0.5               # un chapitre ne prend le nom d'une scène que si elle en fait la moitié
 
 # ---- la famille est présente ----------------------------------------------------------------
 PERSON_MIN, BABY_MIN = 2, 3
@@ -352,33 +354,40 @@ def date_label(start: datetime, end: datetime) -> str:
 
 
 def chapter_title(group: list[Candidate]) -> str:
-    """« Mardi 7 octobre · Piscine » : le jour, et la scène qui revient le plus souvent."""
+    """« Mardi 7 octobre · Piscine » : le jour, et la scène quand elle fait au moins la moitié du chapitre
+    (sinon le titre mentirait : un chapitre de jeux, de repas et de rue reste « Mardi 7 octobre »)."""
     label = date_label(min(c.when for c in group), max(c.when for c in group))
     counts = Counter(c.note for c in group if c.note and c.note not in scenes.GENERIC)
     if counts:
         scene, n = counts.most_common(1)[0]
-        if n >= 2:
+        if n >= 2 and n >= TITLE_SCENE_SHARE * len(group):
             return f"{label} · {scene}"
     return label
 
 
-def pick_cover(selected: list[Candidate], family: list[str] | None = None) -> str | None:
-    """La photo de couverture : du monde, de face, un sourire, belle et nette."""
+def pick_cover(selected: list[Candidate], family: list[str] | None = None, kids=()) -> str | None:
+    """La photo de couverture : les enfants et du monde, de face, un sourire, belle et nette.
+
+    Jamais un selfie, un adulte seul, un repas ni des visages minuscules, sauf s'il n'y a rien d'autre."""
     if not selected:
         return None
-    members = set(family or ())
+    members, children = set(family or ()), set(kids)
 
     def value(c: Candidate) -> float:
         p = c.parts
         crowd = len(c.labels & members) if members else len(c.labels)
-        return (0.30 * min(crowd, 4) / 4 + 0.15 * p.get("frontal", 0.5) + 0.15 * p.get("smile", 0.5)
-                + 0.15 * p.get("beauty_l", p.get("beauty", 0.5)) + 0.10 * min(1.0, p.get("sharpness", 0.5) / SHARP_FULL)
-                + 0.15 * c.score)
+        value = (0.20 * min(crowd, 4) / 4 + 0.12 * p.get("frontal", 0.5) + 0.12 * p.get("smile", 0.5)
+                 + 0.12 * p.get("beauty_l", p.get("beauty", 0.5)) + 0.06 * min(1.0, p.get("sharpness", 0.5) / SHARP_FULL)
+                 + 0.10 * min(1.0, c.meta.get("family_area", 0.0) / FACE_FULL) + 0.18 * c.score)
+        if children:
+            value += 0.20 * min(len(c.labels & children), 3) / 3
+        return value
 
-    return max(selected, key=value).file_id
+    flawed = lambda c: c.meta.get("selfie") or c.meta.get("adult_only") or c.meta.get("meal") or c.meta.get("tiny")
+    return max([c for c in selected if not flawed(c)] or selected, key=value).file_id
 
 
-def layout(selected: list[Candidate], reserve: list[Candidate], family: list[str] | None = None) -> dict:
+def layout(selected: list[Candidate], reserve: list[Candidate], family: list[str] | None = None, kids=()) -> dict:
     """Chapitres, couverture et, pour chaque photo (choisie ou en réserve), son chapitre et son moment."""
     groups = cut_chapters(selected)
     chapters = [{"title": chapter_title(g), "start": g[0].when.isoformat(timespec="seconds"),
@@ -393,7 +402,7 @@ def layout(selected: list[Candidate], reserve: list[Candidate], family: list[str
             k = min(range(len(spans)), key=lambda i: 0.0 if spans[i][0] <= c.when <= spans[i][1]
                     else min(abs((c.when - spans[i][0]).total_seconds()), abs((c.when - spans[i][1]).total_seconds())))
             of[c.file_id] = {"chapter": k, "moment": c.meta.get("moment")}
-    return {"chapters": chapters, "cover": pick_cover(selected, family), "of": of}
+    return {"chapters": chapters, "cover": pick_cover(selected, family, kids), "of": of}
 
 
 # ---- réserve --------------------------------------------------------------------------------
@@ -420,12 +429,13 @@ def build_reserve(selected: list[Candidate], others: dict[int, list[Candidate]],
 def _load_candidates(plan: dict, workdir: Path) -> list[Candidate]:
     cache = _read(workdir / ".cache" / "features.json")
     editor = _read(workdir / ".cache" / "editor.json")
+    current = _read(workdir / ".cache" / "parts.json")   # critères du dernier passage : les mêmes pour toutes
     out = []
     for item in plan.get("photos", []) + plan.get("reserve", []):
         fid = item["id"]
         feat = (cache.get(fid) or {}).get("feat") or {"dhash": "0" * 16, "w": 1, "h": 1, "faces": []}
         c = Candidate(fid, item["name"], datetime.fromisoformat(item["date"]), feat, set(item.get("people", [])))
-        c.score, c.parts, c.note = item.get("score", 0.0), item.get("parts", {}), item.get("note", "")
+        c.score, c.parts, c.note = item.get("score", 0.0), current.get(fid) or item.get("parts", {}), item.get("note", "")
         c.meta = {"vec": (editor.get(fid) or {}).get("vec"), "vec_l": (editor.get(fid) or {}).get("vec_l"),
                   "shot": item.get("shot", ""), "family_area": item.get("face", 0.0)}
         out.append(c)
@@ -460,7 +470,8 @@ def compare(auto_path: Path, ref_path: Path, workdir: Path, out=print) -> dict:
     missing = [i for i in ref_ids if i not in exact and i not in same_moment]
     ref_moments = {moment[i] for i in ref_ids if i in moment}
     extra = [i for i in auto_ids if moment.get(i) not in ref_moments]
-    name = lambda i: f"{by_id[i].name} ({by_id[i].when:%d/%m %H:%M})" if i in by_id else i
+    why = _read(workdir / ".cache" / "rejected.json")
+    name = lambda i: (f"{by_id[i].name} ({by_id[i].when:%d/%m %H:%M})" if i in by_id else i) + _why(why.get(i))
     out(f"Sélection à la main : {len(ref_ids)} photos ; album automatique : {len(auto_ids)} photos.")
     out(f"  mêmes photos : {len(exact)} ; autre prise du même moment : {len(same_moment)} ; "
         f"moment absent de l'album automatique : {len(missing)}.")
@@ -471,15 +482,59 @@ def compare(auto_path: Path, ref_path: Path, workdir: Path, out=print) -> dict:
             out(f"{title} :")
             for i in ids:
                 out(f"  - {name(i)}")
-    return {"exact": exact, "same_moment": same_moment, "missing": missing, "extra": extra}
+    merged = merged_moments(cands, ref_ids)
+    if merged:
+        out(f"Moments où la sélection à la main garde plusieurs photos ({len(merged)}) — "
+            "trop regroupés pour elle, à comparer à MOMENT_COS / MOMENT_GAP :")
+        for m in merged:
+            out(f"  - {', '.join(by_id[i].name for i in m['ids'])} : {m['span_min']:.0f} min d'écart, "
+                f"ressemblance la plus faible {m['min_cos']}")
+    return {"exact": exact, "same_moment": same_moment, "missing": missing, "extra": extra, "merged": merged}
 
 
+def _why(record: dict | None) -> str:
+    """« — écartée : sans intérêt (scène Rue, écart +0,031, visage 1,2 %) » : le dossier d'une photo, en chiffres."""
+    if not record:
+        return ""
+    bits = [record.get("scene") and f"scène {record['scene']}"]
+    if record.get("why") == "sans intérêt" and record.get("gap") is not None:
+        bits.append(f"écart {record['gap']:+.3f}")
+    if record.get("face") is not None:
+        bits.append(f"visage {record['face']:.1%}")
+    if record.get("score") is not None:
+        bits.append(f"note {record['score']:.2f}")
+    bits = [b for b in bits if b]
+    return f" — {record.get('why', '?')}" + (f" ({', '.join(bits)})" if bits else "")
+
+
+def merged_moments(cands: list[Candidate], ref_ids: list[str]) -> list[dict]:
+    """Moments (voir `find_moments`, déjà calculés) où la sélection à la main garde au moins deux photos :
+    leur écart de temps et leur ressemblance la plus faible disent de combien il faudrait resserrer les seuils."""
+    vecs = scoring.Vectors(cands)
+    index = {c.file_id: k for k, c in enumerate(cands)}
+    by_moment: dict = {}
+    for i in ref_ids:
+        if i in index:
+            by_moment.setdefault(cands[index[i]].meta["moment"], []).append(i)
+    out = []
+    for ids in by_moment.values():
+        if len(ids) < 2:
+            continue
+        times = [cands[index[i]].when for i in ids]
+        sims = [s for a, b in itertools.combinations(ids, 2) if (s := vecs.cos(index[a], index[b]))]
+        out.append({"ids": ids, "span_min": (max(times) - min(times)).total_seconds() / 60,
+                    "min_cos": round(min(s[0] for s in sims), 3) if sims else None})
+    return sorted(out, key=lambda m: m["span_min"])
+
+
+MIN_PAIRS = 5   # en dessous, on ne dit rien d'un critère
 TAKE_FEATURES = ("frontal", "eyes", "smile", "emotion", "emotion_l", "sharpness", "beauty", "beauty_l", "tidy",
                  "light", "eye_level", "face_seen", "interaction", "moment")
 
 
 def _take_row(c: Candidate) -> dict[str, float]:
-    row = {k: float(c.parts.get(k, 0.5)) for k in TAKE_FEATURES}
+    """Les critères de la prise ; un critère non mesuré est absent (jamais un 0,5 qui ferait gagner l'autre)."""
+    row = {k: float(c.parts[k]) for k in TAKE_FEATURES if k in c.parts}
     row["face"] = min(1.0, c.meta.get("family_area", 0.0) / FACE_FULL)
     row["people"] = min(1.0, len(c.labels) / 3.0)
     row["score"] = c.score
@@ -487,32 +542,49 @@ def _take_row(c: Candidate) -> dict[str, float]:
     return row
 
 
-def takes_report(plan_paths: list[Path], workdir: Path, out=print) -> dict:
+def takes_report(plan_paths: list[Path], workdir: Path, out=print, min_pairs: int = MIN_PAIRS) -> dict:
     """Parmi les prises d'un même moment, laquelle la famille a-t-elle gardée ? Pour chaque critère :
     part des paires (prise gardée, prise retirée en « doublon » ou échangée) où la prise gardée a la meilleure valeur.
     Puis des poids ajustés sur ces paires (peu de paires : à prendre comme une indication)."""
-    pairs = []
+    pairs, split = [], []
     for path in plan_paths:
         plan = json.loads(Path(path).read_text(encoding="utf-8"))
         review = plan.get("review") or {}
         kept = set(review.get("ids", []))
         # « doublon » : une autre prise du moment est gardée ; « échange » : remplacée par une autre prise (⇄)
         dups = {r["id"] for r in review.get("removed", []) if r.get("reason") in ("doublon", "echange")}
-        for group in find_moments(_load_candidates(plan, workdir)):
+        cands = _load_candidates(plan, workdir)
+        vecs = scoring.Vectors(cands)
+        index = {c.file_id: k for k, c in enumerate(cands)}
+        kept_at = [index[i] for i in kept if i in index]
+        for group in find_moments(cands):
             pairs += [(w, l) for w in group if w.file_id in kept for l in group if l.file_id in dups]
+            if not any(c.file_id in kept for c in group):   # doublon sans photo gardée dans son moment
+                for l in (c for c in group if c.file_id in dups):
+                    near = min(kept_at, key=lambda k: abs((cands[k].when - l.when).total_seconds()), default=None)
+                    if near is not None:
+                        sim = vecs.cos(index[l.file_id], near)
+                        split.append((abs((cands[near].when - l.when).total_seconds()), sim and round(sim[0], 3)))
     out(f"{len(pairs)} paires (prise gardée, prise retirée en doublon) dans un même moment.")
+    if split:
+        gaps = sorted(g for g, _ in split)
+        sims = sorted(s for _, s in split if s is not None)
+        out(f"{len(split)} doublons retirés que je n'ai pas regroupés avec la photo gardée : écart de temps "
+            f"médian {gaps[len(gaps) // 2] / 60:.0f} min" + (f", ressemblance médiane {sims[len(sims) // 2]:.2f}" if sims else "") + ".")
     if not pairs:
         return {}
     rows = [(_take_row(w), _take_row(l)) for w, l in pairs]
-    names = list(rows[0][0])
+    paired = lambda k: sum(k in a and k in b for a, b in rows)
+    names = [k for k in dict.fromkeys(k for a, _ in rows for k in a) if paired(k) >= min_pairs]
     acc = {}
     for k in names:
-        wins = sum(1.0 if a[k] > b[k] else 0.5 if a[k] == b[k] else 0.0 for a, b in rows)
-        acc[k] = wins / len(rows)
-        out(f"  {k:<12} la prise gardée est la meilleure dans {acc[k]:.0%} des paires")
+        both = [(a, b) for a, b in rows if k in a and k in b]
+        wins = sum(1.0 if a[k] > b[k] else 0.5 if a[k] == b[k] else 0.0 for a, b in both)
+        acc[k] = wins / len(both)
+        out(f"  {k:<12} la prise gardée est la meilleure dans {acc[k]:.0%} des {len(both)} paires")
     from . import taste
 
-    fit = [k for k in names if k not in ("score", "take_value")]
+    fit = [k for k in names if k not in ("score", "take_value") and paired(k) == len(rows)]
     X = np.array([[a[k] - b[k] for k in fit] for a, b in rows])
     X = np.vstack([X, -X])
     y = np.array([1.0] * len(rows) + [0.0] * len(rows))

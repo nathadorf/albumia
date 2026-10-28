@@ -170,6 +170,13 @@ python -m album_builder.curate --takes out/main/plan.json
 python -m album_builder.taste --eval        # ce que le goût appris sait prédire
 ```
 
+Chaque album écrit `.cache/rejected.json` : pour chaque photo absente, la raison en chiffres (écartée par
+un filtre, « hors présélection », « autre prise du moment » ou « pas choisie » avec la photo choisie qui lui
+ressemble). `curate --compare` s'en sert pour dire pourquoi une photo voulue à la main manque, et signale les
+moments où la sélection à la main garde plusieurs photos (seuils de `MOMENT_COS` à resserrer). Les photos
+retirées à une relecture sont notées comme les autres (jamais proposées) pour que `--eval` et `--takes`
+comparent des critères mesurés de la même façon.
+
 La ligne de commande d'origine fonctionne toujours :
 
 ```bash

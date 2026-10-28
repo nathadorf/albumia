@@ -335,35 +335,81 @@ def _save_cache(path: Path, cache: dict) -> None:
     tmp.replace(path)
 
 
+def diagnosis(c, why: str) -> dict:
+    """Pourquoi une photo n'est pas dans l'album, en chiffres (jamais l'image) : de quoi comprendre un cas
+    précis, par exemple une photo que la famille voulait (`curate --compare`)."""
+    return {"name": c.name, "why": why, "date": c.when.isoformat(timespec="minutes"),
+            "scene": c.note, "gap": c.meta.get("gap"), "people": sorted(c.labels),
+            "face": round(c.meta.get("family_area", 0.0), 4), "shot": c.meta.get("shot", ""),
+            "kind": c.meta.get("kind", ""), "size": [c.meta.get("width"), c.meta.get("height")],
+            "score": round(c.score, 3), "moment": c.meta.get("moment")}
+
+
+LEFT_OUT_TOP = 300   # on cherche la photo jumelle des mieux notées seulement
+
+
+def left_out(selected, pool, others) -> dict[str, dict]:
+    """Les photos qui avaient passé les filtres sans entrer dans l'album : « autre prise du moment » (une
+    meilleure prise l'a emporté) ou « pas choisie » (la meilleure de son moment, faute de place), avec la
+    photo choisie qui lui ressemble le plus : si c'est une quasi-jumelle, c'est la règle « jamais deux
+    fois la même pose » qui l'a écartée."""
+    chosen = {c.file_id for c in selected}
+    out = {c.file_id: diagnosis(c, "autre prise du moment") for takes in others.values() for c in takes
+           if c.file_id not in chosen}
+    vecs = scoring.Vectors(pool)
+    index = {id(c): i for i, c in enumerate(pool)}
+    picked = [index[id(c)] for c in selected if id(c) in index]
+    unchosen = sorted((c for c in pool if c.file_id not in chosen), key=lambda c: c.score, reverse=True)
+    for rank, c in enumerate(unchosen):
+        record = diagnosis(c, "pas choisie")
+        if rank < LEFT_OUT_TOP:
+            twins = [(s[0], j) for j in picked if (s := vecs.cos(index[id(c)], j))]
+            if twins:
+                best, j = max(twins)
+                record["twin"] = [pool[j].name, round(best, 3)]
+        out[c.file_id] = record
+    return out
+
+
 def refine_with_large_eye(short, examples, editor, model_dir: Path, rep, rate, all_parts, rejected, pinned,
-                          liked_scene) -> list:
+                          liked_scene, side=(), log=None) -> list:
     """Redécrit les scènes, juge les critères de photographe et note à nouveau les candidates que
-    l'œil plus précis a vues ; écarte celles qu'il trouve sans intérêt."""
-    ids = {c.file_id for c in short} | set(examples["pos"]) | set(examples["neg"])
+    l'œil plus précis a vues ; écarte celles qu'il trouve sans intérêt.
+
+    `side` : photos retirées à une relecture. Elles ne sont jamais proposées, mais jugées par le même œil
+    que les autres : le goût appris et les mesures comparent alors des photos notées de la même façon."""
+    ids = {c.file_id for c in short} | {c.file_id for c in side} | set(examples["pos"]) | set(examples["neg"])
     vecs_l = {fid: v["vec_l"] for fid, v in editor.items() if v.get("vec_l") and fid in ids}
     described = scenes.describe_all(vecs_l, model_dir, rep.note, large=True)
     crit = aesthetic.criteria_large(model_dir, rep.note)
     liked = scenes.interest(examples, {k: v[0] for k, v in described.items()}) if described else liked_scene
-    out = []
-    for c in short:
+
+    def look(c, offered: bool) -> bool:
+        """Note à nouveau `c` avec l'œil plus précis ; faux si une photo proposée est « sans intérêt »."""
         vec_l = (editor.get(c.file_id) or {}).get("vec_l")
-        if vec_l:
-            c.meta["vec_l"] = vec_l
-            if crit:
-                c.meta["editor_l"] = aesthetic.judge_vector(np.asarray(vec_l, dtype=float), crit)
-            if c.file_id in described:
-                scene, dull, gap = described[c.file_id]
-                c.note = scene
-                c.meta["meal"] = scenes.KIND.get(scene) == scenes.MEAL
-                c.meta["dull"] = dull or (not scoring.real_faces(c.feat) and gap >= 0)
-                if c.meta["dull"] and not c.meta["shield"] and c.file_id not in pinned:
-                    rejected["sans intérêt"] += 1
-                    continue
-            c.meta["tiny"] = is_tiny(c)
-            rate(c, liked)
-            all_parts[c.file_id] = c.parts
-        out.append(c)
-    return out
+        if not vec_l:
+            return True
+        c.meta["vec_l"] = vec_l
+        if crit:
+            c.meta["editor_l"] = aesthetic.judge_vector(np.asarray(vec_l, dtype=float), crit)
+        if c.file_id in described:
+            scene, dull, gap = described[c.file_id]
+            c.note, c.meta["gap"] = scene, gap
+            c.meta["meal"] = scenes.KIND.get(scene) == scenes.MEAL
+            c.meta["dull"] = dull or (not scoring.real_faces(c.feat) and gap >= 0)
+            if offered and c.meta["dull"] and not c.meta["shield"] and c.file_id not in pinned:
+                rejected["sans intérêt"] += 1
+                if log is not None:
+                    log[c.file_id] = diagnosis(c, "sans intérêt")
+                return False
+        c.meta["tiny"] = is_tiny(c)
+        rate(c, liked)
+        all_parts[c.file_id] = c.parts
+        return True
+
+    for c in side:
+        look(c, offered=False)
+    return [c for c in short if look(c, offered=True)]
 
 
 def build_plan(
@@ -542,13 +588,12 @@ def build_plan(
 
     rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "objet ou décor": 0, "sans intérêt": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0, "personne de la famille": 0, "hors thème": 0}
+    log: dict[str, dict] = {}                 # photo → pourquoi elle n'est pas dans l'album (.cache/rejected.json)
+    side: list[scoring.Candidate] = []        # retirées à une relecture : notées comme les autres, jamais proposées
     for f in files:
         entry = cache.get(f.id)
-        if f.id in banned:
-            rejected["retirée avant"] += 1
-            continue
         if not entry:
-            rejected["sans analyse"] += 1
+            rejected["retirée avant" if f.id in banned else "sans analyse"] += 1
             continue
         feat = entry["feat"]
         faces = scoring.real_faces(feat)
@@ -573,6 +618,7 @@ def build_plan(
         c.meta["selfie"] = c.meta["selfie"] or c.meta["adult_only"]
         scene, dull, gap = described.get(f.id, ("", False, -1.0))
         dull = dull or (not faces and gap >= 0)  # sans visage, le moindre doute suffit
+        c.meta["gap"] = gap if f.id in described else None
         c.meta["meal"] = scenes.KIND.get(scene) == scenes.MEAL
         c.meta["per_face"] = per_face
         c.meta["dull"] = dull
@@ -592,37 +638,46 @@ def build_plan(
         # une photo gardée à une relecture, le thème de l'album
         c.meta["shield"] = bool(family_close or f.id in kept or themed.get(f.id, (0, False))[1])
         twins = banned_vecs.get(f.when.date())
-        if f.id in pinned:
-            cands.append(c)
+        if f.id in banned:
+            why = "retirée avant"
+        elif f.id in pinned:
+            why = ""
         elif twins and c.meta["vec"] and f.id not in kept and any(
                 scoring.same_series(name, f.name, float(np.dot(v, c.meta["vec"]))) for name, v in twins):
-            rejected["comme une photo retirée"] += 1
+            why = "comme une photo retirée"
         elif kind == "capture":
-            rejected["pas une photo"] += 1
+            why = "pas une photo"
         elif (c.meta["editor"] or {}).get("not_album", 0) > aesthetic.NOT_ALBUM_REJECT:
-            rejected["pas pour un album"] += 1
+            why = "pas pour un album"
         # un décor sans personne de la famille n'est pas sauvé par le thème ni par un « lieu »
         # (banderole, enseigne, hall d'hôtel prenaient le libellé « Kotel » ou « fête »)
         elif f.id in objects and not labels and f.id not in kept:
-            rejected["objet ou décor"] += 1
+            why = "objet ou décor"
         elif dull and not c.meta["shield"]:
-            rejected["sans intérêt"] += 1
+            why = "sans intérêt"
         elif scoring.too_small_to_print(f.width, f.height, kind):
-            rejected["trop petite pour l'impression"] += 1
+            why = "trop petite pour l'impression"
         elif c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
-            rejected["floue"] += 1
+            why = "floue"
         elif params.must and must_missing(params.must, labels, refs_by_month[month], per_face):
-            rejected["personne absente"] += 1
+            why = "personne absente"
         elif must_faces and max(x["box"][2] * x["box"][3] for x in must_faces) / area < scoring.MIN_SUBJECT_AREA:
-            rejected["personne trop petite"] += 1
+            why = "personne trop petite"
         elif params.family and faces and not labels & set(wanted) and set(wanted) <= set(refs_by_month[month]):
-            rejected["personne de la famille"] += 1
+            why = "personne de la famille"
         elif params.faces_only and not faces:
-            rejected["sans visage"] += 1
+            why = "sans visage"
         elif params.theme_strict and themed and not themed.get(f.id, (0, False))[1]:
-            rejected["hors thème"] += 1
+            why = "hors thème"
         else:
+            why = ""
+        if not why:
             cands.append(c)
+            continue
+        rejected[why] += 1
+        log[f.id] = diagnosis(c, why)
+        if f.id in banned:
+            side.append(c)
     unknown_age = [w for w in wanted if refs_by_month and not any(w in r for r in refs_by_month.values())]
     if unknown_age:
         rep.note(f"Je ne connais pas encore {', '.join(unknown_age)} à cet âge : donne-leur un prénom "
@@ -638,10 +693,15 @@ def build_plan(
         look_closer([c.file_id for c in short] + list(examples["pos"]) + list(examples["neg"]),
                     thumbs_dir, editor_path, editor, model_dir, rep, cancel)
         if any((editor.get(c.file_id) or {}).get("vec_l") for c in short):
+            looked = {c.file_id for c in short}
+            for c in cands:
+                if c.file_id not in looked:
+                    log[c.file_id] = diagnosis(c, "hors présélection")   # trop loin derrière la meilleure prise
             cands = refine_with_large_eye(short, examples, editor, model_dir, rep, rate, all_parts,
-                                          rejected, pinned, liked_scene)
+                                          rejected, pinned, liked_scene, side=side, log=log)
             _save_cache(workdir / ".cache" / "parts.json", all_parts)
             rep.note(f"Regard précis : {len(cands)} photos gardées pour le tri final.")
+    _save_cache(workdir / ".cache" / "rejected.json", log)
 
     sharp_vecs = {k: v["vec_l"] for k, v in editor.items() if v.get("vec_l")}
     day_of = {k: v["when"] for k, v in cache.items() if v.get("when")}
@@ -711,20 +771,22 @@ def build_plan(
     end_day = max(c.when for c in pool).date()
     babies = [m for m in (family or []) if m in births
               and scoring.months_between(births[m], end_day) < curate.BABY_MONTHS]
-    seeds = curate.coverage_seeds(pool, family, babies, pinned, limit=max(2, params.count // 3)) if family else set()
+    # un dossier qui n'a que 31 moments distincts pour 50 places fait un album de 31 photos : les plafonds
+    # (par activité, plans larges) se comptent sur l'album qu'on va vraiment faire, pas sur celui demandé
+    expected = min(params.count, len(pool))
+    seeds = curate.coverage_seeds(pool, family, babies, pinned, limit=max(2, expected // 3)) if family else set()
     rules = dict(bucket=bucket, floor=floor, family=family, decor_max=decor,
                  selfie_max=scoring.SELFIE_MAX if wanted else None, meal_max=scenes.MEAL_MAX,
                  size_of=size_of, event_cap=curate.event_cap)
     # le plafond par activité sert aux albums de personnes ; un thème (la plage…) ou un album de paysages le
     # lève. Une fête (Souccot…) ne fait que dater l'album : ses activités restent plafonnées.
     capped = wanted and (not params.theme or params.theme in intent.HOLIDAYS)
-    cap = curate.scene_cap(params.count) if capped else None
+    cap = curate.scene_cap(expected) if capped else None
     relaxed = {k: v + 0.05 for k, v in curate.POSE_COS.items()}
-    expected = min(params.count, len(pool))
     selected: list = []
     # les règles du photographe d'abord ; si elles laissent trop de places vides (un dossier où tout se
     # ressemble), on les assouplit puis on les lève pour compléter l'album avec ce qui reste
-    for pose, scene_limit, wide in ((curate.POSE_COS, cap, curate.wide_cap(params.count) if wanted else None),
+    for pose, scene_limit, wide in ((curate.POSE_COS, cap, curate.wide_cap(expected) if wanted else None),
                                     (relaxed, cap and cap + 2, None), (None, None, None)):
         selected = scoring.select_spread(
             pool, params.count, pinned=pinned | seeds | {c.file_id for c in selected}, pose_cos=pose,
@@ -738,7 +800,11 @@ def build_plan(
                  "photos sans personne. Tu peux en reprendre dans la réserve.")
     selected = curate.add_openers(selected, pool, params.count, protected=pinned | seeds)
     reserve = curate.build_reserve(selected, others, pool, params.reserve)
-    plan_layout = curate.layout(selected, reserve, family or list(refs))
+    members = family or list(refs)
+    kids = [m for m in members if m in births and scoring.months_between(births[m], end_day) < 18 * 12]
+    plan_layout = curate.layout(selected, reserve, members, kids)
+    log.update(left_out(selected, pool, others))
+    _save_cache(workdir / ".cache" / "rejected.json", log)
 
     rep.step(5, "Préparation de l'aperçu…")
     out_dir = out_root / slugify(params.name)

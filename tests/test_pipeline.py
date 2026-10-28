@@ -251,6 +251,52 @@ class PipelinePhotographerTests(unittest.TestCase):
         self.assertTrue(all(n >= 3 for n in sizes), sizes)
         self.assertEqual(plan["stats"]["moments"], plan["stats"]["after_dedupe"])
 
+    def test_the_log_says_why_each_absent_photo_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            plan = self.build(tmp, count=12)
+            log = json.loads((tmp / ".cache" / "rejected.json").read_text(encoding="utf-8"))
+        chosen = {p["id"] for p in plan["photos"]}
+        self.assertFalse(chosen & set(log))                       # une photo choisie n'a pas de motif d'absence
+        blurry = {k: v for k, v in log.items() if v["name"].startswith("BLUR")}
+        self.assertEqual({v["why"] for v in blurry.values()}, {"floue"})
+        self.assertEqual(len(blurry), 6)
+        left_out = [v for v in log.values() if v["why"] == "pas choisie"]
+        self.assertGreaterEqual(len(left_out), 30)                # 54 moments pour 12 places
+        record = left_out[0]
+        self.assertLessEqual({"name", "why", "date", "scene", "gap", "people", "face", "shot", "kind", "size", "score",
+                              "moment"}, set(record))
+
+    def test_removed_photos_are_rated_like_the_others_but_never_offered(self):
+        from album_builder import aesthetic, cli
+
+        keys = ("beauty", "emotion", "interaction", "eye_level", "light", "tidy", "face_seen", "moment")
+        crit = {k: (np.array([[1.0, 0.0, 0.0]]), np.array([[0.0, 1.0, 0.0]])) for k in keys}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / ".cache").mkdir()
+            (tmp / ".cache" / "excluded.json").write_text(json.dumps({"f3": "pas-belle", "f4": "doublon"}))
+            (tmp / ".cache" / "taste.json").write_text(json.dumps({"pos": {}, "neg": {"f3": {}}}))
+            client = FakeClient(PipelineTests().make_files())
+            with mock.patch.object(cli, "_client", return_value=client), \
+                 mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()), \
+                 mock.patch.object(aesthetic, "load_judge", return_value=FakeJudge()), \
+                 mock.patch.object(aesthetic, "load_large", return_value=FakeLarge()), \
+                 mock.patch.object(aesthetic, "criteria_large", return_value=crit), \
+                 mock.patch.object(aesthetic, "theme_vectors",
+                                   side_effect=lambda _d, prompts, *a, **k: [np.array([0.0, 1.0, 0.0])] * len(prompts)):
+                cli.main(self.argv(tmp, count=12))
+            plan = json.loads(next((tmp / "out").rglob("plan.json")).read_text(encoding="utf-8"))
+            parts = json.loads((tmp / ".cache" / "parts.json").read_text(encoding="utf-8"))
+            log = json.loads((tmp / ".cache" / "rejected.json").read_text(encoding="utf-8"))
+        offered = {p["id"] for p in plan["photos"] + plan["reserve"]}
+        self.assertFalse({"f3", "f4"} & offered)                  # retirées à une relecture : jamais proposées
+        self.assertEqual({log["f3"]["why"], log["f4"]["why"]}, {"retirée avant"})
+        # … mais notées comme les autres, avec l'œil plus précis quand il les a vues (f3 est un contre-exemple)
+        self.assertIn("beauty_l", parts["f3"])
+        self.assertIn("sharpness", parts["f4"])
+        self.assertEqual(set(parts["f3"]), set(parts[plan["photos"][0]["id"]]))
+
     def test_second_look_with_the_precise_eye(self):
         from album_builder import aesthetic, cli
 
@@ -301,6 +347,25 @@ class ShortlistAndFlagsTests(unittest.TestCase):
         self.assertTrue({c.when.date() for c in cands} <= {c.when.date() for c in short})  # chaque jour
         self.assertIn(cands[0].file_id, ids)
         self.assertEqual(len(pipeline.pick_shortlist(cands[:50], 5)), 50)  # petit dossier : tout passe
+
+    def test_left_out_photos_say_which_chosen_photo_they_look_like(self):
+        from album_builder import pipeline
+        from tests.test_curate import photo, unit
+
+        v = unit(1, 0, 0)
+        chosen = photo(1, datetime(2025, 10, 7, 10), 0.8, vec_l=v)
+        twin = photo(2, datetime(2025, 10, 7, 14), 0.7, vec_l=unit(1, 0.1, 0))   # quatre heures plus tard, même pose
+        other = photo(3, datetime(2025, 10, 8, 10), 0.6, vec_l=unit(0, 0, 1))
+        take = photo(4, datetime(2025, 10, 7, 10, 1), 0.5, vec_l=v)
+        for c, m in ((chosen, 0), (twin, 1), (other, 2), (take, 0)):
+            c.meta["moment"] = m
+        out = pipeline.left_out([chosen], [chosen, twin, other], {0: [take], 1: [], 2: []})
+        self.assertNotIn(chosen.file_id, out)
+        self.assertEqual(out[take.file_id]["why"], "autre prise du moment")
+        self.assertEqual(out[twin.file_id]["why"], "pas choisie")
+        self.assertEqual(out[twin.file_id]["twin"][0], chosen.name)
+        self.assertGreater(out[twin.file_id]["twin"][1], 0.9)
+        self.assertLess(out[other.file_id]["twin"][1], 0.1)
 
     def test_adult_alone_and_tiny_subject(self):
         from datetime import date

@@ -190,6 +190,16 @@ class ChapterTests(unittest.TestCase):
         lone = [photo(1, T0, note="Piscine"), photo(2, T0, note="Plage")]
         self.assertEqual(curate.chapter_title(lone), "Mardi 7 octobre")
 
+    def test_a_scene_names_the_chapter_only_when_it_is_half_of_it(self):
+        notes = lambda *names: [photo(i, T0 + timedelta(minutes=i), note=n) for i, n in enumerate(names)]
+        mixed = notes("Piscine", "Piscine", "Rue", "Toboggan", "Plage", "Câlin")      # 2 sur 6 : le titre mentirait
+        self.assertEqual(curate.chapter_title(mixed), "Mardi 7 octobre")
+        half = notes("Piscine", "Piscine", "Rue", "Toboggan")                         # 2 sur 4 : la moitié
+        self.assertEqual(curate.chapter_title(half), "Mardi 7 octobre · Piscine")
+        # « Portrait », « En famille »… sont des genres de photos, jamais le thème d'un chapitre
+        generic = notes("Portrait", "Portrait", "Portrait", "Piscine")
+        self.assertEqual(curate.chapter_title(generic), "Mardi 7 octobre")
+
 
 class CoverAndFamilyTests(unittest.TestCase):
     def test_the_cover_is_a_group_facing_the_camera(self):
@@ -198,6 +208,27 @@ class CoverAndFamilyTests(unittest.TestCase):
                       smile=0.8, beauty=0.8, sharpness=0.8)
         self.assertEqual(curate.pick_cover([solo, group], ["Eydel", "Arié", "Hillel"]), "id2")
         self.assertIsNone(curate.pick_cover([]))
+
+    def test_the_cover_shows_the_children_not_only_the_parents(self):
+        family = ["Eydel", "Arié", "Perla", "Nathanaël"]
+        parents = photo(1, T0, 0.9, labels={"Perla", "Nathanaël"}, frontal=1.0, smile=1.0, beauty=0.9, sharpness=0.9)
+        parents.meta["family_area"] = 0.05
+        kids = photo(2, T0 + timedelta(hours=1), 0.7, labels={"Eydel", "Arié"}, frontal=0.8, smile=0.8, beauty=0.7,
+                     sharpness=0.7)
+        kids.meta["family_area"] = 0.03
+        self.assertEqual(curate.pick_cover([parents, kids], family, kids=["Eydel", "Arié"]), "id2")
+
+    def test_the_cover_is_never_a_selfie_a_meal_or_tiny_faces_when_something_else_exists(self):
+        family = ["Eydel", "Arié", "Perla"]
+        plain = photo(1, T0, 0.5, labels={"Eydel"}, frontal=0.6, smile=0.6)
+        plain.meta["family_area"] = 0.02
+        for flaw in ("selfie", "adult_only", "meal", "tiny"):
+            flawed = photo(2, T0 + timedelta(hours=1), 0.95, labels={"Eydel", "Arié", "Perla"}, frontal=1.0, smile=1.0,
+                           beauty=1.0, sharpness=1.0)
+            flawed.meta.update({flaw: True, "family_area": 0.05})
+            self.assertEqual(curate.pick_cover([plain, flawed], family, kids=["Eydel", "Arié"]), "id1", flaw)
+        only = [flawed]
+        self.assertEqual(curate.pick_cover(only, family), "id2")        # rien d'autre : on prend quand même
 
     def pool(self):
         t = T0
@@ -288,9 +319,35 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(sorted(out["extra"]), ["p1", "p2"])
         self.assertIn("Sélection à la main : 3 photos", lines[0])
 
+    def test_compare_tells_why_a_wanted_photo_is_missing_and_where_the_moments_are_too_wide(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            (work / ".cache").mkdir()
+            (work / ".cache" / "editor.json").write_text(json.dumps({
+                "p0": {"vec": unit(1, 0, 0)}, "p1": {"vec": unit(1, 0.4, 0)}, "p2": {"vec": unit(0, 0, 1)},
+                "p3": {"vec": unit(0, 1, 0)}}))
+            (work / ".cache" / "features.json").write_text(json.dumps(
+                {f"p{i}": {"feat": {"dhash": format(i * 0x0F0F, "016x"), "w": 10, "h": 10, "faces": []}} for i in range(4)}))
+            (work / ".cache" / "rejected.json").write_text(json.dumps({
+                "p3": {"name": "IMG_3", "why": "sans intérêt", "scene": "Rue", "gap": 0.031, "face": 0.012}}))
+            item = lambda i, minutes: {"id": f"p{i}", "name": f"IMG_{i}", "date": (T0 + timedelta(minutes=minutes)).isoformat(),
+                                       "score": 0.5, "parts": {}, "people": [], "note": "", "shot": ""}
+            auto = {"photos": [item(2, 300)], "reserve": []}
+            ref = {"photos": [item(0, 0), item(1, 7), item(3, 600)],
+                   "review": {"ids": ["p0", "p1", "p3"], "removed": []}}
+            (work / "auto.json").write_text(json.dumps(auto))
+            (work / "ref.json").write_text(json.dumps(ref))
+            lines = []
+            out = curate.compare(work / "auto.json", work / "ref.json", work, out=lines.append)
+        text = "\n".join(lines)
+        self.assertIn("IMG_3", text)
+        self.assertIn("sans intérêt (scène Rue, écart +0.031, visage 1.2%)", text)
+        self.assertEqual(len(out["merged"]), 1)                   # p0 et p1 : un seul moment pour Albumia, deux pour la famille
+        self.assertEqual(out["merged"][0]["ids"], ["p0", "p1"])
+        self.assertAlmostEqual(out["merged"][0]["span_min"], 7)
+        self.assertLess(out["merged"][0]["min_cos"], 0.95)
+        self.assertIn("IMG_0, IMG_1", text)
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TakesReportTests(unittest.TestCase):
@@ -312,12 +369,58 @@ class TakesReportTests(unittest.TestCase):
                                                                   {"id": "p4", "reason": "pas-belle"}]}}
             (work / "plan.json").write_text(json.dumps(plan))
             lines = []
-            out = curate.takes_report([work / "plan.json"], work, out=lines.append)
+            out = curate.takes_report([work / "plan.json"], work, out=lines.append, min_pairs=1)
         self.assertEqual(out["pairs"], 2)                     # p4 n'est pas un doublon : pas de paire
         self.assertEqual(out["accuracy"]["frontal"], 1.0)
         self.assertEqual(out["accuracy"]["sharpness"], 0.0)   # la prise gardée est la moins nette
         self.assertGreater(out["weights"]["frontal"], 0)
         self.assertGreater(out["accuracy"]["take_value"], 0.5)
+
+    def plan_with(self, work, photos, removed, kept):
+        (work / ".cache").mkdir(exist_ok=True)
+        (work / ".cache" / "editor.json").write_text(json.dumps(
+            {p["id"]: {"vec": unit(1, 0, 0) if p["id"] != "p9" else unit(0, 1, 0)} for p in photos}))
+        (work / ".cache" / "features.json").write_text("{}")
+        plan = {"photos": photos, "reserve": [], "review": {"ids": kept, "removed": removed}}
+        (work / "plan.json").write_text(json.dumps(plan))
+        return work / "plan.json"
+
+    def test_a_criterion_measured_on_one_side_only_is_not_compared(self):
+        item = lambda i, minutes, **parts: {"id": f"p{i}", "name": f"IMG_{i}", "score": 0.5, "parts": parts, "people": [],
+                                            "date": (T0 + timedelta(minutes=minutes)).isoformat(), "note": "", "shot": ""}
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            # la prise gardée a un critère de l'œil précis, la retirée n'a jamais été notée avec lui : pas de verdict
+            photos = [item(0, 0, frontal=1.0, beauty_l=0.9), item(1, 2, frontal=0.1),
+                      item(2, 120, frontal=0.9, beauty_l=0.8), item(3, 122, frontal=0.2)]
+            path = self.plan_with(work, photos, [{"id": "p1", "reason": "doublon"}, {"id": "p3", "reason": "doublon"}],
+                                  ["p0", "p2"])
+            out = curate.takes_report([path], work, out=lambda *_: None, min_pairs=1)
+        self.assertIn("frontal", out["accuracy"])
+        self.assertNotIn("beauty_l", out["accuracy"])
+        self.assertNotIn("beauty_l", out["weights"])
+
+    def test_too_few_pairs_say_nothing_about_a_criterion(self):
+        item = lambda i, minutes, **parts: {"id": f"p{i}", "name": f"IMG_{i}", "score": 0.5, "parts": parts, "people": [],
+                                            "date": (T0 + timedelta(minutes=minutes)).isoformat(), "note": "", "shot": ""}
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            photos = [item(0, 0, frontal=1.0), item(1, 2, frontal=0.1)]
+            path = self.plan_with(work, photos, [{"id": "p1", "reason": "doublon"}], ["p0"])
+            out = curate.takes_report([path], work, out=lambda *_: None)
+        self.assertEqual(out["accuracy"].get("frontal"), None)
+
+    def test_removed_duplicates_not_grouped_with_the_kept_photo_are_counted(self):
+        item = lambda i, minutes: {"id": f"p{i}", "name": f"IMG_{i}", "score": 0.5, "parts": {}, "people": [],
+                                   "date": (T0 + timedelta(minutes=minutes)).isoformat(), "note": "", "shot": ""}
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            photos = [item(0, 0), item(9, 40)]     # même pose, mais 40 minutes plus tard : deux moments pour Albumia
+            path = self.plan_with(work, photos, [{"id": "p9", "reason": "doublon"}], ["p0"])
+            lines = []
+            curate.takes_report([path], work, out=lines.append)
+        self.assertTrue(any("1 doublons retirés que je n'ai pas regroupés" in line and "40 min" in line
+                            for line in lines), lines)
 
 
 class OpenerTests(unittest.TestCase):
@@ -370,3 +473,7 @@ class OpenerTests(unittest.TestCase):
     def test_small_albums_are_left_alone(self):
         few = self.album()[:6]
         self.assertEqual(curate.add_openers(few, few + [self.wide(100, T0)], 6), sorted(few, key=lambda c: c.when))
+
+
+if __name__ == "__main__":
+    unittest.main()

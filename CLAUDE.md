@@ -23,6 +23,7 @@ non technique. Tout texte visible est en français, au tutoiement, sans jargon.
 - `album_builder/curate.py` : tri de photographe (un moment = une photo, la prise la plus naturelle, jamais deux
   fois la même pose, chapitres, plan large d'ouverture, couverture, photos imposées pour que chacun soit présent) ;
   `python -m album_builder.curate --compare auto/plan.json main/plan.json` et `--takes plan.json…`
+  (`.cache/rejected.json` : pourquoi chaque photo est absente d'un album, en chiffres ; `--compare` le lit)
 - `album_builder/scoring.py` : critères, `select_spread` (répartition par jour/mois, plafonds, même pose bloquée)
 - `album_builder/scenes.py` (description de chaque photo, « sans intérêt »), `aesthetic.py` (CLIP), `taste.py`
   (goût appris : `python -m album_builder.taste --eval`), `compose.py`, `learn.py`, `hebcal.py`, `gphotos.py`
