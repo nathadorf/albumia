@@ -715,7 +715,10 @@ def build_plan(
     rules = dict(bucket=bucket, floor=floor, family=family, decor_max=decor,
                  selfie_max=scoring.SELFIE_MAX if wanted else None, meal_max=scenes.MEAL_MAX,
                  size_of=size_of, event_cap=curate.event_cap)
-    cap = None if params.theme else curate.scene_cap(params.count)
+    # le plafond par activité sert aux albums de personnes ; un thème (la plage…) ou un album de paysages le
+    # lève. Une fête (Souccot…) ne fait que dater l'album : ses activités restent plafonnées.
+    capped = wanted and (not params.theme or params.theme in intent.HOLIDAYS)
+    cap = curate.scene_cap(params.count) if capped else None
     relaxed = {k: v + 0.05 for k, v in curate.POSE_COS.items()}
     expected = min(params.count, len(pool))
     selected: list = []
