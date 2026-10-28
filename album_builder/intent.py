@@ -78,12 +78,15 @@ THEMES = {
 }
 # mesuré sur 501 vraies photos : dehors manquait des photos à 0,05 au-dessus de la médiane,
 # le bain gardait papa assis dans une baignoire vide. Écart au-dessus de la médiane du dossier :
-THEME_MARGIN = {"dehors": 0.04, "zoo": 0.04, "velo": 0.04, "repas": 0.04, "bain": 0.06, "neige": 0.06}
+THEME_MARGIN = {"dehors": 0.04, "zoo": 0.06, "velo": 0.04, "repas": 0.04, "bain": 0.06, "neige": 0.06}
+# le thème existe dans le dossier si 5 photos dépassent la médiane de tant (défaut : marge + 0,02)
+THEME_FOUND = {"repas": 0.04, "zoo": 0.07}
 # ce qui ressemble au thème sans en être : la photo doit ressembler plus au thème qu'à ça
 THEME_NOT = {
     "bain": "an empty bathtub, an adult in a bathroom",
     "neige": "a grey winter sky, bare trees, autumn leaves, a white wall",
-    "zoo": "pigeons and ducks at a park lake",
+    "zoo": "pigeons and ducks at a park lake, a playground with swings and a slide, a merry-go-round",
+    "dehors": "a child indoors on a wooden floor, a high chair",
     "anniversaire": "a child playing with toys at home",
 }
 DEFAULT_COUNT = 50

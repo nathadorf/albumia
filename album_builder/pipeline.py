@@ -113,7 +113,8 @@ def album_theme(params, files, editor, model_dir: Path, rep) -> dict[str, tuple[
         rep.note(f"Thème « {label} » non pris en compte : l'œil d'éditeur n'est pas disponible.")
         return {}
     margin = intent.THEME_MARGIN.get(params.theme, scoring.THEME_STRICT_MARGIN)
-    if not scoring.theme_found(vecs, tvec, margin):
+    found = intent.THEME_FOUND.get(params.theme, margin + scoring.THEME_FOUND_EXTRA)
+    if not scoring.theme_found(vecs, tvec, found):
         rep.note(f"Je ne trouve pas de photos « {label} » dans ce dossier : thème ignoré.")
         params.theme_strict = False
         return {}

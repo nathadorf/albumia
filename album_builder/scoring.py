@@ -505,12 +505,13 @@ def _theme_sims(vecs, theme_vec):
     return ids, mat @ np.asarray(theme_vec, dtype=float), mat
 
 
-def theme_found(vecs: dict[str, list[float]], theme_vec, margin: float = THEME_STRICT_MARGIN) -> bool:
-    """Le dossier contient-il vraiment ce thème ? (pas d'anniversaire : pas de faux gâteaux)"""
+def theme_found(vecs: dict[str, list[float]], theme_vec, margin: float = THEME_STRICT_MARGIN + THEME_FOUND_EXTRA) -> bool:
+    """Le dossier contient-il vraiment ce thème ? (pas d'anniversaire : pas de faux gâteaux)
+    `margin` : écart à la médiane que doivent dépasser au moins THEME_FOUND_MIN photos."""
     _, sims, _ = _theme_sims(vecs, theme_vec)
     if not len(sims):
         return False
-    return int((sims >= float(np.median(sims)) + margin + THEME_FOUND_EXTRA).sum()) >= THEME_FOUND_MIN
+    return int((sims >= float(np.median(sims)) + margin).sum()) >= THEME_FOUND_MIN
 
 
 def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec,
