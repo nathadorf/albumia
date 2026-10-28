@@ -25,7 +25,7 @@ DEFAULT_MATCH_THRESHOLD = 0.45
 LENIENT_MATCH_THRESHOLD = 0.38
 MATCH_MARGIN = 0.05
 MIN_FACE_AREA = 0.005             # visage < 0,5 % de la photo : fausse détection ou figurant
-MIN_SUBJECT_AREA = 0.02           # visage de la personne choisie < 2 % de la photo : elle n'est pas le sujet
+MIN_SUBJECT_AREA = 0.015          # visage de la personne choisie < 1,5 % de la photo : elle n'est pas le sujet
 
 PRINT_MIN_SIDE = (800, 1500)      # côté court de l'original (px) : 0 → 1 de note « impression »
 PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image de messagerie) : trop petite pour un album
