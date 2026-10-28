@@ -128,5 +128,55 @@ class ImageTasteTests(unittest.TestCase):
             self.assertTrue(0.0 <= score <= 1.0)
 
 
+class GroupedValidationTests(unittest.TestCase):
+    @staticmethod
+    def bursts(n_bursts=24, size=6, seed=1):
+        """Des rafales de photos quasi identiques, aimées ou retirées AU HASARD : rien à apprendre."""
+        rng = np.random.default_rng(seed)
+        vecs, day_of, pos, neg = {}, {}, [], []
+        for b in range(n_bursts):
+            base = rng.normal(size=64)
+            liked = bool(rng.integers(0, 2))
+            for k in range(size):
+                v = base + 0.05 * rng.normal(size=64)
+                fid = f"b{b}_{k}"
+                vecs[fid] = list(v / np.linalg.norm(v))
+                day_of[fid] = f"2025-10-{b + 1:02d}"
+                (pos if liked else neg).append(fid)
+        return vecs, day_of, pos, neg
+
+    def test_photo_by_photo_validation_cheats_on_bursts(self):
+        vecs, day_of, pos, neg = self.bursts()
+        ids = pos + neg
+        y = np.array([1.0] * len(pos) + [0.0] * len(neg))
+        X = np.array([vecs[f] for f in ids])
+        X = (X - X.mean(0)) / (X.std(0) + 1e-6)
+        alone = taste.cross_val_auc(X, y, l2=10, lr=None)
+        grouped = taste.cross_val_auc(X, y, l2=10, lr=None, groups=[day_of[f] for f in ids])
+        self.assertGreater(alone, 0.8)    # la rafale fuit des deux côtés
+        self.assertLess(grouped, 0.7)     # sur de nouvelles journées : le hasard
+
+    def test_no_taste_is_trusted_when_it_only_memorises_bursts(self):
+        vecs, day_of, pos, neg = self.bursts()
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), pos, neg)
+            model, kind = taste.best_model(Path(d), vecs, None, day_of)
+            self.assertIsNone(model)
+            self.assertIsNone(kind)
+
+    def test_twins_from_other_days_share_a_group(self):
+        vecs = {"a": [1.0, 0.0], "b": [0.999, 0.04], "c": [0.0, 1.0]}
+        groups = taste.group_ids(["a", "b", "c"], {"a": "lundi", "b": "mardi", "c": "mardi"}, vecs)
+        self.assertEqual(len({groups["a"], groups["b"], groups["c"]}), 1)  # a~b (jumelles), b et c même jour
+
+    def test_folds_never_split_a_group(self):
+        groups = ["x"] * 7 + ["y"] * 5 + ["z"] * 4 + ["w"] * 4 + ["v"] * 2
+        folds = taste._group_folds(groups, 5, 0)
+        self.assertEqual(sum(len(f) for f in folds), len(groups))
+        for g in set(groups):
+            holders = [k for k, f in enumerate(folds) if any(groups[i] == g for i in f)]
+            self.assertEqual(len(holders), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -271,7 +271,7 @@ class TasteTests(unittest.TestCase):
         parts, pos, neg = self.data()
         with tempfile.TemporaryDirectory() as d:
             taste.add_examples(Path(d), pos, neg, parts=parts)
-            X, y = taste._dataset(taste.load_examples(Path(d)))
+            X, y, _ = taste._dataset(taste.load_examples(Path(d)))
             self.assertGreater(taste.cross_val_auc(X, y), 0.9)
             m = taste.model_for(Path(d))
             self.assertEqual(m.explain(1)[0][0], "clean")

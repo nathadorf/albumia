@@ -76,10 +76,14 @@ def features(parts: dict) -> np.ndarray:
 class Taste:
     def __init__(self, w: np.ndarray, b: float, size: int):
         self.w, self.b, self.size = w, b, size
+        self.auc = float("nan")   # justesse sur des journées jamais vues (validation croisée par groupes)
 
     def predict(self, parts: dict) -> float:
         z = float(features(parts) @ self.w + self.b)
-        return round(1.0 / (1.0 + np.exp(-z)), 4)
+        return round(1.0 / (1.0 + np.exp(-np.clip(z, -30, 30))), 4)
+
+    def score(self, vec, parts: dict) -> float:
+        return self.predict(parts)
 
     def explain(self, top: int = 5) -> list[tuple[str, float]]:
         """Les critères qui comptent le plus pour cette famille (+ : aimé, − : pas aimé)."""
@@ -108,28 +112,67 @@ def train(X: np.ndarray, y: np.ndarray, l2: float = L2, steps: int = 600, lr: fl
 
 
 def _dataset(examples: dict, current: dict[str, dict] | None = None):
-    """Les critères recalculés à ce passage (`current`) priment sur ceux enregistrés."""
+    """Les critères recalculés à ce passage (`current`) priment sur ceux enregistrés.
+    Renvoie (critères, 1 = aimée / 0 = retirée, identifiants)."""
     current = current or {}
-    rows, ys = [], []
+    rows, ys, ids = [], [], []
     for label, group in ((1, examples["pos"]), (0, examples["neg"])):
         for fid, saved in group.items():
             parts = current.get(fid) or saved
             if parts:
                 rows.append(features(parts))
                 ys.append(label)
+                ids.append(fid)
     if not rows:
-        return np.zeros((0, len(FEATURES))), np.zeros(0)
-    return np.asarray(rows), np.asarray(ys, dtype=float)
+        return np.zeros((0, len(FEATURES))), np.zeros(0), []
+    return np.asarray(rows), np.asarray(ys, dtype=float), ids
 
 
-def model_for(workdir: Path, current: dict[str, dict] | None = None, min_auc: float = MIN_AUC) -> Taste | None:
-    examples = load_examples(workdir)
-    X, y = _dataset(examples, current)
+def group_ids(ids: list[str], day_of: dict[str, str] | None = None,
+              vectors: dict[str, list[float]] | None = None, twin_cos: float = 0.9) -> dict[str, str]:
+    """Un groupe par photo : celles du même jour, et les quasi-jumelles d'un autre jour, vont ensemble.
+
+    Sans cela, la validation croisée triche : une photo et sa rafale de sept quasi identiques se
+    retrouvent des deux côtés, et le goût paraît bien meilleur qu'il ne l'est sur de nouvelles photos
+    (sur 3 albums relus : justesse 0,96 en théorie, pas mieux que l'ancien goût en pratique)."""
+    day_of = day_of or {}
+    parent = {fid: fid for fid in ids}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    first_of_day: dict[str, str] = {}
+    for fid in ids:
+        day = day_of.get(fid)
+        if day:
+            union(fid, first_of_day.setdefault(day, fid))
+    known = [fid for fid in ids if vectors and vectors.get(fid)]
+    if len(known) > 1:
+        V = np.asarray([vectors[f] for f in known], dtype=float)
+        V /= np.linalg.norm(V, axis=1, keepdims=True) + 1e-9
+        close = np.argwhere(np.triu(V @ V.T, 1) >= twin_cos)
+        for i, j in close:
+            union(known[i], known[j])
+    return {fid: find(fid) for fid in ids}
+
+
+def model_for(workdir: Path, current: dict[str, dict] | None = None, min_auc: float = MIN_AUC,
+              groups: dict[str, str] | None = None) -> Taste | None:
+    X, y, ids = _dataset(load_examples(workdir), current)
     if len(y) == 0 or y.sum() < MIN_EXAMPLES or (len(y) - y.sum()) < MIN_EXAMPLES:
         return None
-    if min_auc and not cross_val_auc(X, y) >= min_auc:
+    score = cross_val_auc(X, y, groups=[(groups or {}).get(f, f) for f in ids])
+    if min_auc and not score >= min_auc:
         return None
-    return train(X, y)
+    m = train(X, y)
+    m.auc = round(score, 3)
+    return m
 
 
 # ---- goût appris sur l'image entière ---------------------------------------------------------
@@ -139,8 +182,9 @@ def model_for(workdir: Path, current: dict[str, dict] | None = None, min_auc: fl
 # moins de photos retirées parmi les proposées).
 IMAGE_MIN = 25          # exemples par classe avant de s'y fier
 IMAGE_L2 = (10.0, 30.0, 100.0, 300.0)
-IMAGE_MIN_AUC = 0.75
-IMAGE_WEIGHT = 0.5      # part du goût dans la note quand il est fiable
+IMAGE_MIN_AUC = 0.70    # sur des journées jamais vues
+IMAGE_WEIGHT = 0.30     # part du goût dans la note quand il est fiable (comme le goût sur les critères)
+IMAGE_BETTER_BY = 0.02  # le goût sur l'image ne remplace celui sur les critères que s'il généralise mieux
 
 
 class ImageTaste:
@@ -151,37 +195,60 @@ class ImageTaste:
         x = np.clip((np.concatenate([np.asarray(vec, dtype=float), features(parts)]) - self.mean) / self.std, -6, 6)
         return round(float(1.0 / (1.0 + np.exp(-np.clip(x @ self.w + self.b, -30, 30)))), 4)
 
+    def score(self, vec, parts: dict) -> float:
+        return self.predict(vec, parts)
+
 
 def _image_dataset(workdir: Path, vectors: dict[str, list[float]], current: dict[str, dict] | None = None):
     current = current or {}
     ex = load_examples(workdir)
-    rows, ys = [], []
+    rows, ys, ids = [], [], []
     for label, group in ((1, ex["pos"]), (0, ex["neg"])):
         for fid, saved in group.items():
             vec = vectors.get(fid)
             if vec:
                 rows.append(np.concatenate([np.asarray(vec, dtype=float), features(current.get(fid) or saved)]))
                 ys.append(label)
+                ids.append(fid)
     if not rows:
-        return np.zeros((0, 1)), np.zeros(0)
-    return np.asarray(rows), np.asarray(ys, dtype=float)
+        return np.zeros((0, 1)), np.zeros(0), []
+    return np.asarray(rows), np.asarray(ys, dtype=float), ids
 
 
-def image_model_for(workdir: Path, vectors: dict[str, list[float]],
-                    current: dict[str, dict] | None = None) -> ImageTaste | None:
+def image_model_for(workdir: Path, vectors: dict[str, list[float]], current: dict[str, dict] | None = None,
+                    groups: dict[str, str] | None = None) -> ImageTaste | None:
     """Goût appris sur [vecteur de l'image, critères] ; None tant qu'il n'est pas fiable.
     `vectors` : {photo: vecteur ViT-L/14} pour toutes les photos connues (editor.json)."""
-    X, y = _image_dataset(workdir, vectors, current)
+    X, y, ids = _image_dataset(workdir, vectors, current)
     if y.sum() < IMAGE_MIN or len(y) - y.sum() < IMAGE_MIN:
         return None
     mean, std = X.mean(axis=0), X.std(axis=0) + 1e-6
     Z = (X - mean) / std
-    scores = {l2: cross_val_auc(Z, y, l2=l2, lr=None) for l2 in IMAGE_L2}
-    best = max(scores, key=lambda l2: scores[l2])
+    by = [(groups or {}).get(f, f) for f in ids]
+    scores = {l2: cross_val_auc(Z, y, l2=l2, lr=None, groups=by) for l2 in IMAGE_L2}
+    best = max(scores, key=lambda l2: scores[l2] if scores[l2] == scores[l2] else -1)
     if not scores[best] >= IMAGE_MIN_AUC:
         return None
     m = train(Z, y, l2=best, lr=None)
     return ImageTaste(m.w, m.b, mean, std, len(y), round(scores[best], 3))
+
+
+def best_model(workdir: Path, vectors: dict[str, list[float]], current: dict[str, dict] | None = None,
+               day_of: dict[str, str] | None = None):
+    """Le goût qui généralise le mieux à des journées jamais vues : (modèle, genre) ou (None, None).
+
+    genre : « image » (vecteur de l'image + critères) ou « critères » (la quinzaine de notes lisibles).
+    Les deux sont jugés par validation croisée sur des groupes (journées, rafales), jamais sur des photos
+    isolées : une rafale entière est toujours d'un seul côté."""
+    ex = load_examples(workdir)
+    groups = group_ids(list(ex["pos"]) + list(ex["neg"]), day_of, vectors)
+    image = image_model_for(workdir, vectors, current, groups)
+    simple = model_for(workdir, current, groups=groups)
+    if image and (not simple or image.auc >= simple.auc + IMAGE_BETTER_BY):
+        return image, "image"
+    if simple:
+        return simple, "critères"
+    return None, None
 
 
 def auc(scores, labels) -> float:
@@ -193,15 +260,41 @@ def auc(scores, labels) -> float:
                  / (len(pos) * len(neg)))
 
 
+def _group_folds(groups, folds: int, seed: int) -> list[np.ndarray]:
+    """Parties de taille proche, sans jamais couper un groupe."""
+    labels = list(groups)
+    members: dict = {}
+    for i, g in enumerate(labels):
+        members.setdefault(g, []).append(i)
+    k = min(folds, len(members))
+    order = list(members)
+    np.random.default_rng(seed).shuffle(order)
+    order.sort(key=lambda g: -len(members[g]))     # les plus gros groupes d'abord
+    parts: list[list[int]] = [[] for _ in range(k)]
+    for g in order:
+        min(parts, key=len).extend(members[g])
+    return [np.asarray(sorted(p)) for p in parts]
+
+
 def cross_val_auc(X: np.ndarray, y: np.ndarray, folds: int = 5, l2: float = L2, seed: int = 0,
-                  lr: float = 1.0) -> float:
-    if len(y) < 2 * folds:
+                  lr: float | None = 1.0, groups=None) -> float:
+    """Justesse (AUC) en validation croisée. Avec `groups` (une étiquette par ligne), jamais deux photos
+    d'un même groupe de part et d'autre : c'est la justesse sur de nouvelles journées."""
+    n = len(y)
+    if n < 2 * folds:
         return float("nan")
-    order = np.random.default_rng(seed).permutation(len(y))
-    preds = np.zeros(len(y))
-    for k in range(folds):
-        test = order[k::folds]
-        train_idx = np.setdiff1d(order, test)
+    if groups is None:
+        order = np.random.default_rng(seed).permutation(n)
+        tests = [order[k::folds] for k in range(folds)]
+    else:
+        tests = _group_folds(groups, folds, seed)
+        if len(tests) < 2:
+            return float("nan")
+    preds = np.full(n, 0.5)
+    for test in tests:
+        train_idx = np.setdiff1d(np.arange(n), test)
+        if y[train_idx].min() == y[train_idx].max():
+            continue
         m = train(X[train_idx], y[train_idx], l2=l2, lr=lr)
         preds[test] = 1.0 / (1.0 + np.exp(-np.clip(X[test] @ m.w + m.b, -30, 30)))
     return auc(preds, y)
@@ -266,31 +359,41 @@ def main(argv=None) -> None:
         exclude(workdir, args.exclude, args.reason)
         print(f"{len(args.exclude)} photo(s) retirée(s) pour de bon.")
     if args.eval:
-        try:
-            current = json.loads((workdir / ".cache" / "parts.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            current = {}
-        X, y = _dataset(load_examples(workdir), current)
-        print(f"{int(y.sum())} aimées, {int(len(y) - y.sum())} moins aimées.")
+        def load(name):
+            try:
+                return json.loads((workdir / ".cache" / name).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return {}
+
+        current, editor, cache = load("parts.json"), load("editor.json"), load("features.json")
+        day_of = {k: v["when"] for k, v in cache.items() if v.get("when")}
+        vectors = {k: v["vec_l"] for k, v in editor.items() if v.get("vec_l")}
+        examples = load_examples(workdir)
+        groups = group_ids(list(examples["pos"]) + list(examples["neg"]), day_of, vectors)
+        X, y, ids = _dataset(examples, current)
+        by = [groups.get(f, f) for f in ids]
+        print(f"{int(y.sum())} aimées, {int(len(y) - y.sum())} moins aimées, "
+              f"{len(set(by))} groupes (journées, rafales).")
         for l2 in (0.1, 1.0, 10.0):
-            print(f"L2={l2}: AUC={cross_val_auc(X, y, l2=l2):.3f}")
+            alone = np.nanmean([cross_val_auc(X, y, l2=l2, seed=s) for s in range(3)])
+            grouped = np.nanmean([cross_val_auc(X, y, l2=l2, seed=s, groups=by) for s in range(3)])
+            print(f"Critères, L2={l2}: AUC photo par photo={alone:.3f} ; sur des journées jamais vues={grouped:.3f}")
         for k in FEATURES:  # pouvoir de chaque critère seul
             i = FEATURES.index(k)
             print(f"  {k:<11} AUC seul = {auc(X[:, i], y):.3f}")
         if len(y):
             print("Ce qui compte :", train(X, y).explain(8))
-        try:  # goût sur l'image entière (œil plus précis déjà passé sur ces photos)
-            editor = json.loads((workdir / ".cache" / "editor.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            editor = {}
-        vectors = {k: v["vec_l"] for k, v in editor.items() if v.get("vec_l")}
-        XI, yi = _image_dataset(workdir, vectors, current)
+        XI, yi, ids_i = _image_dataset(workdir, vectors, current)
         print(f"Sur l'image (ViT-L/14) : {int(yi.sum())} aimées, {int(len(yi) - yi.sum())} moins aimées.")
         if len(yi) >= 10:
             Z = (XI - XI.mean(axis=0)) / (XI.std(axis=0) + 1e-6)
+            by_i = [groups.get(f, f) for f in ids_i]
             for l2 in IMAGE_L2:
-                runs = [cross_val_auc(Z, yi, l2=l2, lr=None, seed=s) for s in range(3)]
-                print(f"L2={l2:g}: AUC={np.mean(runs):.3f}")
+                alone = np.nanmean([cross_val_auc(Z, yi, l2=l2, lr=None, seed=s) for s in range(3)])
+                grouped = np.nanmean([cross_val_auc(Z, yi, l2=l2, lr=None, seed=s, groups=by_i) for s in range(3)])
+                print(f"Image, L2={l2:g}: AUC photo par photo={alone:.3f} ; sur des journées jamais vues={grouped:.3f}")
+        model, kind = best_model(workdir, vectors, current, day_of)
+        print("Goût retenu :", f"{kind} (justesse {model.auc} sur des journées jamais vues)" if model else "aucun (pas assez fiable)")
 
 
 if __name__ == "__main__":

@@ -539,20 +539,17 @@ def build_plan(
                  "dans « Qui est sur tes photos ? », puis relance l'album, il sera bien meilleur.")
     _save_cache(workdir / ".cache" / "parts.json", all_parts)  # pour mesurer le goût (taste --eval)
     sharp_vecs = {k: v["vec_l"] for k, v in editor.items() if v.get("vec_l")}
-    seen = taste.image_model_for(workdir, sharp_vecs, all_parts)
-    liked = None if seen else taste.model_for(workdir, all_parts)
-    if seen:
-        rep.note(f"Ton goût, appris sur l'image de {seen.size} photos gardées ou retirées, guide le choix.")
+    day_of = {k: v["when"] for k, v in cache.items() if v.get("when")}
+    learned, kind = taste.best_model(workdir, sharp_vecs, all_parts, day_of)
+    if learned:
+        rep.note(f"Ton goût, appris sur {learned.size} photos gardées ou retirées, compte dans le choix.")
+        weight = taste.IMAGE_WEIGHT if kind == "image" else taste.WEIGHT
         for c in cands:
             vec = sharp_vecs.get(c.file_id)
-            if vec:
-                c.parts["taste"] = seen.predict(vec, c.parts)
-                c.local_score = c.score = (1 - taste.IMAGE_WEIGHT) * c.score + taste.IMAGE_WEIGHT * c.parts["taste"]
-    elif liked:
-        rep.note(f"Ton goût, appris sur {liked.size} photos gardées ou retirées, compte dans le choix.")
-        for c in cands:
-            c.parts["taste"] = liked.predict(c.parts)
-            c.local_score = c.score = (1 - taste.WEIGHT) * c.score + taste.WEIGHT * c.parts["taste"]
+            if kind == "image" and not vec:
+                continue  # pas encore vue par l'œil plus précis : sa note reste celle des critères
+            c.parts["taste"] = learned.score(vec, c.parts)
+            c.local_score = c.score = (1 - weight) * c.score + weight * c.parts["taste"]
     if themed:
         for c in cands:
             c.parts["theme"] = themed.get(c.file_id, (0.5, False))[0]
