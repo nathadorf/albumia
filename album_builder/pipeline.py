@@ -402,7 +402,7 @@ def build_plan(
             rejected["personne absente"] += 1
         elif must_faces and max(x["box"][2] * x["box"][3] for x in must_faces) / area < scoring.MIN_SUBJECT_AREA:
             rejected["personne trop petite"] += 1
-        elif params.family and faces and not labels & set(wanted):
+        elif params.family and faces and not labels & set(wanted) and set(wanted) <= set(refs_by_month[month]):
             rejected["personne de la famille"] += 1
         elif params.faces_only and not faces:
             rejected["sans visage"] += 1
@@ -410,6 +410,10 @@ def build_plan(
             rejected["hors thème"] += 1
         else:
             cands.append(c)
+    unknown_age = [w for w in wanted if refs_by_month and not any(w in r for r in refs_by_month.values())]
+    if unknown_age:
+        rep.note(f"Je ne connais pas encore {', '.join(unknown_age)} à cet âge : donne-leur un prénom "
+                 "dans « Qui est sur tes photos ? », puis relance l'album, il sera bien meilleur.")
     _save_cache(workdir / ".cache" / "parts.json", all_parts)  # pour mesurer le goût (taste --eval)
     liked = taste.model_for(workdir, all_parts)
     if liked:

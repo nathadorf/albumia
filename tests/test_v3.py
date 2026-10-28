@@ -515,8 +515,16 @@ class FamilyHolidayTests(unittest.TestCase):
 
     def test_reference_taken_before_birth_is_ignored(self):
         refs = scoring.refs_at({"Arié": [([1.0, 0.0], date(2021, 7, 14)), ([0.0, 1.0], date(2022, 11, 1))]},
-                               {"Arié": date(2022, 9, 9)}, date(2023, 6, 1))
+                               {"Arié": date(2022, 9, 9)}, date(2023, 3, 1))
         self.assertAlmostEqual(refs["Arié"][1], 1.0)
+
+    def test_child_without_reference_at_that_age_is_not_guessed(self):
+        sets = {"Eydel": [([1.0, 0.0], date(2021, 8, 1)), ([0.9, 0.1], date(2023, 1, 1))],
+                "Perla": [([0.0, 1.0], date(2020, 7, 5))]}
+        births = {"Eydel": date(2021, 7, 14)}
+        refs = scoring.refs_at(sets, births, date(2025, 10, 8))  # Eydel à 4 ans : aucune référence
+        self.assertNotIn("Eydel", refs)   # le bébé Hillel ne sera pas pris pour Eydel bébé
+        self.assertIn("Perla", refs)      # un adulte change peu
 
     def test_family_album_shares_places(self):
         items = []

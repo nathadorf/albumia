@@ -190,6 +190,9 @@ def months_between(start: date, end: date) -> int:
     return (end.year - start.year) * 12 + end.month - start.month - (end.day < start.day)
 
 
+CHILD_MONTHS = 72  # avant 6 ans, un visage change trop pour reconnaître avec des photos d'un autre âge
+
+
 def refs_at(ref_sets: dict, births: dict[str, date], when: date) -> dict[str, list[float]]:
     """Empreinte de chaque personne à l'âge qu'elle avait le jour `when`.
 
@@ -205,9 +208,16 @@ def refs_at(ref_sets: dict, births: dict[str, date], when: date) -> dict[str, li
         if birth and when >= birth:
             age = months_between(birth, when)
             window = max(6, age // 2)
-            near = [e for e, d in items if d is None or abs(months_between(birth, d) - age) <= window]
-            if any(d is not None and abs(months_between(birth, d) - age) <= window for _, d in items):
-                chosen = near
+            dated_near = [e for e, d in items if d is not None and abs(months_between(birth, d) - age) <= window]
+            undated = [e for e, d in items if d is None]
+            if dated_near:
+                chosen = dated_near + undated
+            elif undated:
+                chosen = undated  # âge inconnu : on fait confiance aux photos non datées
+            elif age < CHILD_MONTHS:
+                # un enfant sans référence à cet âge : mieux vaut ne pas le reconnaître que de
+                # prendre Hillel bébé pour Eydel bébé (« Qui est sur tes photos ? » le demandera)
+                continue
         mean = np.mean(np.asarray(chosen, dtype=float), axis=0)
         out[name] = (mean / (np.linalg.norm(mean) or 1.0)).tolist()
     return out
