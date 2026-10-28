@@ -548,3 +548,17 @@ class FamilyHolidayTests(unittest.TestCase):
         self.assertLess(scoring.subject_sharpness(f, []), scoring.REJECT_SHARPNESS)
         self.assertGreater(parts["sharpness"], 0.5)
         self.assertNotIn("lap_tiles", parts)
+
+    def test_people_album_keeps_little_decor(self):
+        t0 = datetime(2025, 10, 5, 9)
+        items = []
+        for i in range(30):
+            c = cand(f"d{i}", t0 + timedelta(hours=2 * i), 0.9, dhash=format(random.Random(500 + i).getrandbits(64), "016x"))
+            items.append(c)  # pas de visage : rue, plats, affiches
+        for i in range(30):
+            c = cand(f"f{i}", t0 + timedelta(hours=2 * i + 1), 0.7, dhash=format(random.Random(900 + i).getrandbits(64), "016x"))
+            c.feat["faces"] = [face(box=[100, 100, 200, 200])]
+            items.append(c)
+        sel = scoring.select_spread(items, 20, decor_max=scoring.DECOR_MAX_SHARE)
+        self.assertLessEqual(sum(1 for c in sel if not c.feat["faces"]), 2)
+        self.assertEqual(len(sel), 20)

@@ -548,6 +548,7 @@ def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec,
             for i, fid in enumerate(ids)}
 
 
+DECOR_MAX_SHARE = 0.10   # photos sans personne (rue, plat, affiche) : 10 % de l'album au plus
 FAMILY_MIN_SHARE = 0.15   # album « en famille » : chacun sur au moins ~15 % des photos…
 FAMILY_MAX_SHARE = 0.40   # …et personne seul(e) sur plus de 40 %
 FAMILY_NEED = 0.06        # coup de pouce par personne encore trop peu présente
@@ -640,7 +641,8 @@ class _Diversity:
 
 
 def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25,
-                  floor: float | None = None, family: list[str] | None = None) -> list[Candidate]:
+                  floor: float | None = None, family: list[str] | None = None,
+                  decor_max: float | None = None) -> list[Candidate]:
     """Choisit n photos qui racontent la période.
 
     1. Les places sont réparties entre les périodes (mois, ou tranches d'âge avec `bucket`).
@@ -650,6 +652,7 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
     4. Avec `floor`, une photo trop faible ne bouche pas un trou : la place passe à une autre
        période, ou reste vide (un album plus court vaut mieux qu'une photo ratée).
     5. Avec `family`, chacun est assez présent et personne n'envahit l'album.
+    6. Avec `decor_max`, les photos sans personne ne dépassent pas cette part de l'album.
     """
     if floor is not None:
         items = [c for c in items if c.score >= floor]
@@ -659,10 +662,18 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
     index = {id(c): i for i, c in enumerate(items)}
     scores = np.array([c.score for c in items])
     taken = np.zeros(len(items), dtype=bool)
+    decor = np.array([not real_faces(c.feat) for c in items])
+    decor_left = [max(1, int(n * decor_max)) if decor_max is not None else len(items)]
 
-    def pick(rows: list[int]) -> int:
+    def pick(rows: list[int]) -> int | None:
+        if decor_left[0] <= 0:
+            rows = [r for r in rows if not decor[r]]
+            if not rows:
+                return None
         gain = scores[rows] - div.penalty(rows)
-        return rows[int(np.argmax(gain))]
+        best = rows[int(np.argmax(gain))]
+        decor_left[0] -= int(decor[best])
+        return best
 
     bucket = bucket or (lambda c: (c.when.year, c.when.month))
     groups: dict = {}
@@ -681,18 +692,18 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
         pool = [index[id(c)] for c in groups[key]]
         for _ in range(quota):
             open_ = [r for r in pool if not taken[r] and left[moment_of[r]] > 0]
-            if not open_:
+            best = pick(open_) if open_ else None
+            if best is None:
                 break
-            best = pick(open_)
             taken[best] = True
             div.add(best)
             left[moment_of[best]] -= 1
     if floor is not None and taken.sum() < n:  # places libres : les meilleures restantes, toutes périodes
         while taken.sum() < n:
             rest = list(np.nonzero(~taken)[0])
-            if not rest:
+            best = pick(rest) if rest else None
+            if best is None:
                 break
-            best = pick(rest)
             taken[best] = True
             div.add(best)
     return sorted((items[i] for i in np.nonzero(taken)[0]), key=lambda c: c.when)

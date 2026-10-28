@@ -117,7 +117,9 @@ def album_theme(params, files, editor, model_dir: Path, rep) -> dict[str, tuple[
         return {}
     margin = intent.THEME_MARGIN.get(params.theme, scoring.THEME_STRICT_MARGIN)
     found = intent.THEME_FOUND.get(params.theme, margin + scoring.THEME_FOUND_EXTRA)
-    if not scoring.theme_found(vecs, tvec, found):
+    # une ambiance ne fait que mettre en avant : pas besoin de prouver qu'elle existe
+    # (un dossier entièrement « vacances » n'a pas de photos qui ressortent du lot)
+    if strict_kind and not scoring.theme_found(vecs, tvec, found):
         rep.note(f"Je ne trouve pas de photos « {label} » dans ce dossier : thème ignoré.")
         params.theme_strict = False
         return {}
@@ -453,7 +455,9 @@ def build_plan(
         rep.note(f"Répartition selon l'âge de {main}.")
     floor = scoring.quality_floor([c.score for c in pool])
     family = list(dict.fromkeys(params.must + params.bonus)) if params.family else None
-    selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor, family=family)
+    decor = scoring.DECOR_MAX_SHARE if wanted else None  # album de personnes : peu de décor
+    selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor, family=family,
+                                     decor_max=decor)
     if len(selected) < params.count and params.theme_strict and themed:
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:
