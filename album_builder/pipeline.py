@@ -99,6 +99,43 @@ def judge_photos(files, cache, thumbs_dir: Path, editor_path: Path, model_dir: P
     return editor
 
 
+def is_selfie(faces, per_face, births, when, feat) -> bool:
+    """Un adulte de la famille en très gros plan : selfie pris à bout de bras."""
+    area = float(feat["w"] * feat["h"]) or 1.0
+    for face, label in zip(faces, per_face):
+        adult = label and (label not in births or scoring.months_between(births[label], when) >= 18 * 12)
+        if adult and face["box"][2] * face["box"][3] / area >= scoring.SELFIE_FACE_AREA:
+            return True
+    return False
+
+
+# ce qui n'est pas un souvenir de famille, même avec un visage dessus (affiche, écran, publicité)
+OBJECT_PROMPTS = [
+    "an advertisement poster on a wall", "a photo of a phone screen or a computer screen",
+    "a banner or a sign with text", "a supermarket shelf with products", "a plate of food on a table",
+    "an empty room or a corridor", "a city street with buildings and a tram", "a fridge door with magnets",
+    "a restaurant menu", "a projection screen in a hall",
+]
+PEOPLE_PROMPTS = ["a photo of a child", "a family photo", "a baby", "children playing", "a portrait of a person"]
+OBJECT_MARGIN = 0.02
+
+
+def object_photos(files, editor, model_dir: Path, rep) -> set[str]:
+    """Photos qui ressemblent nettement plus à un objet ou un décor qu'à des gens."""
+    vecs = {f.id: (editor.get(f.id) or {}).get("vec") for f in files}
+    vecs = {k: v for k, v in vecs.items() if v}
+    if not vecs:
+        return set()
+    obj = [aesthetic.theme_vector(model_dir, x, rep.note) for x in OBJECT_PROMPTS]
+    ppl = [aesthetic.theme_vector(model_dir, x, rep.note) for x in PEOPLE_PROMPTS]
+    if any(v is None for v in obj + ppl):
+        return set()
+    ids = list(vecs)
+    mat = np.asarray([vecs[i] for i in ids], dtype=float)
+    gap = (mat @ np.vstack(obj).T).max(axis=1) - (mat @ np.vstack(ppl).T).max(axis=1)
+    return {fid for fid, g in zip(ids, gap) if g > OBJECT_MARGIN}
+
+
 def must_missing(must, labels, known, per_face) -> bool:
     """Une personne obligatoire manque. Un enfant qu'Albumia ne sait pas encore reconnaître à cet
     âge (pas de référence proche) peut être n'importe quel visage inconnu de la photo."""
@@ -128,7 +165,8 @@ def album_theme(params, files, editor, model_dir: Path, rep) -> dict[str, tuple[
     found = intent.THEME_FOUND.get(params.theme, margin + scoring.THEME_FOUND_EXTRA)
     # une ambiance ne fait que mettre en avant : pas besoin de prouver qu'elle existe
     # (un dossier entièrement « vacances » n'a pas de photos qui ressortent du lot)
-    if strict_kind and not scoring.theme_found(vecs, tvec, found):
+    # une fête juive : ses dates suffisent, le thème ne fait que mettre en avant
+    if strict_kind and params.theme not in intent.HOLIDAYS and not scoring.theme_found(vecs, tvec, found):
         rep.note(f"Je ne trouve pas de photos « {label} » dans ce dossier : thème ignoré.")
         params.theme_strict = False
         return {}
@@ -352,6 +390,7 @@ def build_plan(
     ref_sets = {n: [(e, dates.get(n, {}).get(photo)) for photo, e in v] for n, v in ref_photos.items()}
     refs_by_month: dict = {}
     themed = album_theme(params, files, editor, model_dir, rep)
+    objects = object_photos(files, editor, model_dir, rep) if wanted else set()
     all_parts: dict[str, dict] = {}
     cands: list[scoring.Candidate] = []
     reasons = taste.excluded_reasons(workdir)
@@ -367,7 +406,7 @@ def build_plan(
         vec = (editor.get(fid) or {}).get("vec")
         if vec and fid in by_id:
             banned_vecs.setdefault(by_id[fid].when.date(), []).append((by_id[fid].name, vec))
-    rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
+    rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "objet ou décor": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0, "personne de la famille": 0, "hors thème": 0}
     for f in files:
         entry = cache.get(f.id)
@@ -394,7 +433,8 @@ def build_plan(
                   "comp": (editor.get(f.id) or {}).get("comp"),
                   "vec": (editor.get(f.id) or {}).get("vec"),
                   "scene": (editor.get(f.id) or {}).get("scene"),
-                  "shot": scoring.shot_type(feat, focus or faces)}
+                  "shot": scoring.shot_type(feat, focus or faces),
+                  "selfie": is_selfie(faces, per_face, births, f.when.date(), feat)}
         c.local_score, c.parts = scoring.local_score(
             feat, labels, params.bonus, params.weights, per_face, wanted, c.meta
         )
@@ -410,6 +450,8 @@ def build_plan(
             rejected["pas une photo"] += 1
         elif (c.meta["editor"] or {}).get("not_album", 0) > aesthetic.NOT_ALBUM_REJECT:
             rejected["pas pour un album"] += 1
+        elif f.id in objects and not labels & set(wanted):
+            rejected["objet ou décor"] += 1
         elif scoring.too_small_to_print(f.width, f.height, kind):
             rejected["trop petite pour l'impression"] += 1
         elif c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
@@ -478,7 +520,7 @@ def build_plan(
     family = list(dict.fromkeys(params.must + params.bonus)) if params.family else None
     decor = scoring.DECOR_MAX_SHARE if wanted else None  # album de personnes : peu de décor
     selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor, family=family,
-                                     decor_max=decor)
+                                     decor_max=decor, selfie_max=scoring.SELFIE_MAX if wanted else None)
     if len(selected) < params.count and params.theme_strict and themed:
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:

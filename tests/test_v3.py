@@ -589,3 +589,19 @@ class FamilyHolidayTests(unittest.TestCase):
         self.assertTrue(it.family)
         self.assertEqual(it.must, [])
         self.assertEqual(it.bonus, ["Eydel", "Nathanaël", "Perla"])
+
+    def test_selfies_capped_and_album_filled(self):
+        t0 = datetime(2025, 10, 5, 9)
+        items = []
+        for i in range(12):
+            c = cand(f"s{i}", t0 + timedelta(hours=5 * i), 0.95, dhash=format(random.Random(70 + i).getrandbits(64), "016x"))
+            c.feat["faces"] = [face(box=[100, 100, 300, 300])]
+            c.meta["selfie"] = True
+            items.append(c)
+        for i in range(12):
+            c = cand(f"k{i}", t0 + timedelta(hours=5 * i + 2), 0.6, dhash=format(random.Random(170 + i).getrandbits(64), "016x"))
+            c.feat["faces"] = [face(box=[100, 100, 200, 200])]
+            items.append(c)
+        sel = scoring.select_spread(items, 10, selfie_max=scoring.SELFIE_MAX)
+        self.assertEqual(sum(1 for c in sel if c.meta.get("selfie")), 2)
+        self.assertEqual(len(sel), 10)

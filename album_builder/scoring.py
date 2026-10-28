@@ -558,6 +558,8 @@ def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec,
             for i, fid in enumerate(ids)}
 
 
+SELFIE_MAX = 2            # selfies (un adulte en gros plan, bras tendu) : 2 par album au plus
+SELFIE_FACE_AREA = 0.06   # visage d'adulte de plus de 6 % de l'image : pris à bout de bras
 DECOR_MAX_SHARE = 0.10   # photos sans personne (rue, plat, affiche) : 10 % de l'album au plus
 FAMILY_MIN_SHARE = 0.15   # album « en famille » : chacun sur au moins ~15 % des photos…
 FAMILY_MAX_SHARE = 0.40   # …et personne seul(e) sur plus de 40 %
@@ -652,7 +654,7 @@ class _Diversity:
 
 def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25,
                   floor: float | None = None, family: list[str] | None = None,
-                  decor_max: float | None = None) -> list[Candidate]:
+                  decor_max: float | None = None, selfie_max: int | None = None) -> list[Candidate]:
     """Choisit n photos qui racontent la période.
 
     1. Les places sont réparties entre les périodes (mois, ou tranches d'âge avec `bucket`).
@@ -663,6 +665,7 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
        période, ou reste vide (un album plus court vaut mieux qu'une photo ratée).
     5. Avec `family`, chacun est assez présent et personne n'envahit l'album.
     6. Avec `decor_max`, les photos sans personne ne dépassent pas cette part de l'album.
+    7. Avec `selfie_max`, au plus ce nombre de selfies (meta["selfie"]).
     """
     if floor is not None:
         items = [c for c in items if c.score >= floor]
@@ -674,15 +677,20 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
     taken = np.zeros(len(items), dtype=bool)
     decor = np.array([not real_faces(c.feat) for c in items])
     decor_left = [max(1, int(n * decor_max)) if decor_max is not None else len(items)]
+    selfie = np.array([bool(c.meta.get("selfie")) for c in items])
+    selfie_left = [selfie_max if selfie_max is not None else len(items)]
 
     def pick(rows: list[int]) -> int | None:
         if decor_left[0] <= 0:
             rows = [r for r in rows if not decor[r]]
-            if not rows:
-                return None
+        if selfie_left[0] <= 0:
+            rows = [r for r in rows if not selfie[r]]
+        if not rows:
+            return None
         gain = scores[rows] - div.penalty(rows)
         best = rows[int(np.argmax(gain))]
         decor_left[0] -= int(decor[best])
+        selfie_left[0] -= int(selfie[best])
         return best
 
     bucket = bucket or (lambda c: (c.when.year, c.when.month))
@@ -708,7 +716,7 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
             taken[best] = True
             div.add(best)
             left[moment_of[best]] -= 1
-    if floor is not None and taken.sum() < n:  # places libres : les meilleures restantes, toutes périodes
+    if taken.sum() < n:  # places libres : les meilleures restantes, toutes périodes
         while taken.sum() < n:
             rest = list(np.nonzero(~taken)[0])
             best = pick(rest) if rest else None
