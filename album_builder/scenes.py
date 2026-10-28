@@ -43,10 +43,11 @@ SCENES = [
     ("Loulav", "a child holding a lulav and an etrog", SOUVENIR),
     ("Bougies de fête", "lighting candles for a holiday", SOUVENIR),
     ("Anniversaire", "a birthday cake with candles", SOUVENIR),
-    ("Déguisement", "a child in a costume", SOUVENIR),
+    ("Déguisement", "a child wearing a costume", SOUVENIR),
     ("Vélo", "a child riding a bike", SOUVENIR),
     ("Animaux", "a child looking at animals at a zoo or a farm", SOUVENIR),
     ("Dans l'avion", "children sitting in an airplane seat", SOUVENIR),
+    ("Rue le soir", "a city street at night with people", PLACE),
     ("Le Kotel", "a family at the Western Wall in Jerusalem", PLACE),
     ("Monument", "a famous landmark or monument", PLACE),
     ("Paysage", "a beautiful landscape view", PLACE),
@@ -54,6 +55,8 @@ SCENES = [
     ("Repas de fête", "a festive family meal at a decorated table", MEAL),
     ("Repas", "children eating a meal", MEAL),
     ("Intérieur de bus", "the inside of a bus or a tram", BANAL),
+    ("Valises", "suitcases at an airport or in a hall", BANAL),
+    ("Enfants de dos", "children seen from behind", BANAL),
     ("Station de tram", "a tram station", BANAL),
     ("Rue", "a city street with traffic and buildings", BANAL),
     ("Magasin", "a supermarket aisle", BANAL),
@@ -74,7 +77,7 @@ SCENES = [
     ("Pieds", "people's feet on the floor", BANAL),
 ]
 KIND = {label: kind for label, _, kind in SCENES}
-BANAL_MARGIN = 0.02     # « sans intérêt » seulement s'il l'emporte nettement sur toute autre scène
+BANAL_MARGIN = 0.025    # « sans intérêt » seulement s'il l'emporte nettement sur toute autre scène
 FAMILY_FACE_AREA = 0.03  # … et si personne de la famille n'est bien visible (visage ≥ 3 % de l'image)
 MEAL_MAX = 2            # la famille garde peu de repas : 2 par album au plus
 PRIOR = {SOUVENIR: 0.65, PLACE: 0.6, MEAL: 0.4, BANAL: 0.2}
