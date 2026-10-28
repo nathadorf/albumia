@@ -31,7 +31,8 @@ PRINT_MIN_SIDE = (800, 1500)      # côté court de l'original (px) : 0 → 1 de
 PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image de messagerie) : trop petite pour un album
 SAME_CONTENT_COS = (0.80, 0.95)   # CLIP : 0,80 = scène voisine, 0,95 = même scène (autre angle)
 SAME_SCENE_DUPLICATE = 0.93       # CLIP, photos à moins de 15 min : doublon (canapé, poussette…)
-ROUTINE_MAX = 3                   # chaise haute, siège auto, poussette, repas : au plus 3 par album
+ROUTINE_MAX = None                # plafond de routine : désactivé, le type de scène CLIP se trompe trop
+                                  # (le biberon sur le canapé classé « repas », le turban « bain »)
 SAME_INSTANT_SECONDS = 600        # deux photos à moins de 10 min : même instant, on préfère varier
 STAR_BONUS = 0.12                 # photo étoilée dans Drive
 MOMENT_GAP_HOURS = 2              # plus de 2 h sans photo : un nouveau moment commence
@@ -52,14 +53,16 @@ class Weights:
     resolution: float = 0.06          # assez grande pour un tirage
     beauty: float = 0.10              # œil d'éditeur (CLIP) : AUC 0,61 sur la sélection de référence
     emotion: float = 0.16             # œil d'éditeur (CLIP) : joie, tendresse ; AUC 0,70
-    # composition des photographes (compose.py), à valider sur de vraies sélections
-    placement: float = 0.06           # sujet pas collé au bord
-    headroom: float = 0.02            # de l'air au-dessus de la tête
-    clean: float = 0.06               # fond simple
-    attention: float = 0.04           # l'œil va au sujet
-    level: float = 0.03               # horizon droit
-    color: float = 0.03               # couleurs vivantes
-    contrast: float = 0.02
+    # composition des photographes (compose.py). Mesurée sur une sélection faite à la main
+    # (44 contre 66) : seule la couleur sépare un peu (AUC 0,60) ; le reste n'aide pas encore
+    # et sert seulement d'entrée au goût appris (taste.py), qui décidera s'il compte.
+    placement: float = 0.02           # visage près d'un point fort (AUC 0,56)
+    headroom: float = 0.0
+    clean: float = 0.0
+    attention: float = 0.0
+    level: float = 0.0
+    color: float = 0.04               # couleurs vivantes (AUC 0,60)
+    contrast: float = 0.0
     bonus: float = 0.16
 
 
@@ -422,7 +425,7 @@ def diversity_penalty(c: Candidate, chosen: list[Candidate], strength: float = 0
         who = frozenset(c.labels)
         penalty += 0.04 * max(0.0, _share(chosen, lambda o: frozenset(o.labels), who) - 0.5)
     scene = c.meta.get("scene")
-    if scene:
+    if scene and ROUTINE_MAX:
         from .aesthetic import ROUTINE
         same = sum(1 for o in chosen if o.meta.get("scene") == scene)
         penalty += 0.03 * same

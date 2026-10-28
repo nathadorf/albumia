@@ -1,6 +1,7 @@
 """Critères v3 : moments, variété, naissance, impression, apprentissage."""
 import tempfile
 import unittest
+import unittest.mock
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -368,8 +369,9 @@ class AlbumRulesTests(unittest.TestCase):
         routine = [self.vcand(i, t + timedelta(days=i), 0.9, [1, i, 0], "chaise haute" if i % 2 else "siège auto")
                    for i in range(8)]
         outings = [self.vcand(100 + i, t + timedelta(days=i, hours=6), 0.75, [0, 1, i], "dehors") for i in range(8)]
-        chosen = scoring.select_spread(routine + outings, 8)
-        self.assertLessEqual(sum(1 for c in chosen if c.meta["scene"] != "dehors"), scoring.ROUTINE_MAX)
+        with unittest.mock.patch.object(scoring, "ROUTINE_MAX", 3):  # désactivé par défaut (scènes peu fiables)
+            chosen = scoring.select_spread(routine + outings, 8)
+        self.assertLessEqual(sum(1 for c in chosen if c.meta["scene"] != "dehors"), 3)
 
     def test_composition_metrics(self):
         import cv2

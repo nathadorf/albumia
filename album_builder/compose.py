@@ -20,10 +20,11 @@ def _clip(x: float) -> float:
 
 
 def placement(box, w: int, h: int) -> float:
-    """Sujet pas collé au bord : 0 si le centre du visage touche un bord, 1 dès 25 % du bord."""
+    """Visage près d'un point fort (tiers ou centre, à 1/3 ou 0,45 de la hauteur) ; 0 au bord."""
     x, y, fw, fh = box
     cx, cy = (x + fw / 2) / w, (y + fh / 2) / h
-    return _clip((min(cx, 1 - cx) - 0.05) / 0.20) * _clip((min(cy, 1 - cy) - 0.05) / 0.15)
+    d = min(math.hypot(cx - a, cy - b) for a in (1 / 3, 0.5, 2 / 3) for b in (1 / 3, 0.45))
+    return _clip(1.0 - d / 0.30)
 
 
 def headroom(box, w: int, h: int) -> float:
