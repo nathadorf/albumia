@@ -482,6 +482,78 @@ def quality_floor(scores: list[float]) -> float | None:
     return float(np.percentile(scores, QUALITY_FLOOR_PERCENTILE)) if len(scores) >= 10 else None
 
 
+class _Diversity:
+    """`diversity_penalty` pour toutes les photos d'un coup (numpy) : 5 000 photos en quelques secondes.
+
+    À chaque photo retenue, on met à jour la ressemblance maximale de chaque candidate avec ce qui
+    est déjà choisi, au lieu de tout recomparer à chaque tour.
+    """
+
+    def __init__(self, items: list[Candidate], strength: float):
+        self.items, self.strength = items, strength
+        n = len(items)
+        self.bits = np.array([int(c.feat["dhash"], 16) for c in items], dtype=np.uint64)
+        self.times = np.array([c.when.timestamp() for c in items])
+        hues = [c.feat.get("hues") for c in items]
+        width = max((len(h) for h in hues if h), default=0)
+        self.has_hue = np.array([bool(h) and len(h) == width for h in hues])
+        self.H = np.array([h if self.has_hue[i] else [0.0] * width for i, h in enumerate(hues)], dtype=float)
+        vecs = [c.meta.get("vec") for c in items]
+        dim = max((len(v) for v in vecs if v), default=0)
+        self.has_vec = np.array([bool(v) and len(v) == dim for v in vecs])
+        self.V = np.array([v if self.has_vec[i] else [0.0] * dim for i, v in enumerate(vecs)], dtype=float)
+        self.shot = [c.meta.get("shot", "scène") for c in items]
+        self.portrait = [c.feat["h"] > c.feat["w"] for c in items]
+        self.who = [frozenset(c.labels) for c in items]
+        self.scene = [c.meta.get("scene") for c in items]
+        self.maxsim = np.zeros(n)
+        self.instant = np.zeros(n, dtype=bool)
+        self.count: dict = {}
+        self.chosen = 0
+        self.routine = 0
+
+    def add(self, j: int) -> None:
+        xor = np.bitwise_xor(self.bits, self.bits[j])
+        dist = np.unpackbits(xor.view(np.uint8).reshape(-1, 8), axis=1).sum(axis=1)
+        sim = np.maximum(0.0, 1.0 - dist / 32.0)
+        if self.has_hue[j]:
+            hue = np.minimum(self.H, self.H[j]).sum(axis=1)
+            sim = np.where(self.has_hue, 0.5 * sim + 0.5 * hue, sim)
+        if self.has_vec[j]:
+            lo, hi = SAME_CONTENT_COS
+            content = np.clip((self.V @ self.V[j] - lo) / (hi - lo), 0.0, 1.0)
+            sim = np.where(self.has_vec, np.maximum(sim, content), sim)
+        self.maxsim = np.maximum(self.maxsim, sim)
+        self.instant |= np.abs(self.times - self.times[j]) < SAME_INSTANT_SECONDS
+        for key in (("shot", self.shot[j]), ("portrait", self.portrait[j]), ("who", self.who[j]),
+                    ("scene", self.scene[j])):
+            self.count[key] = self.count.get(key, 0) + 1
+        self.chosen += 1
+        if ROUTINE_MAX and self.scene[j]:
+            from .aesthetic import ROUTINE
+            self.routine += self.scene[j] in ROUTINE
+
+    def penalty(self, rows: list[int]) -> np.ndarray:
+        rows_a = np.asarray(rows, dtype=int)
+        if not self.chosen:
+            return np.zeros(len(rows_a))
+        pen = self.strength * np.maximum(0.0, self.maxsim[rows_a] - 0.55) / 0.45 + 0.12 * self.instant[rows_a]
+        if self.chosen >= 4:
+            share = lambda kind, v: self.count.get((kind, v), 0) / self.chosen
+            pen = pen + np.array([
+                0.06 * max(0.0, share("shot", self.shot[i]) - SHOT_TARGETS.get(self.shot[i], 0.4))
+                + 0.03 * max(0.0, share("portrait", self.portrait[i]) - 0.65)
+                + 0.04 * max(0.0, share("who", self.who[i]) - 0.5)
+                for i in rows_a])
+        if ROUTINE_MAX:
+            from .aesthetic import ROUTINE
+            pen = pen + np.array([
+                (0.03 * self.count.get(("scene", self.scene[i]), 0)
+                 + (0.3 if self.scene[i] in ROUTINE and self.routine >= ROUTINE_MAX else 0.0))
+                if self.scene[i] else 0.0 for i in rows_a])
+        return pen
+
+
 def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25,
                   floor: float | None = None) -> list[Candidate]:
     """Choisit n photos qui racontent la période.
@@ -495,12 +567,22 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
     """
     if floor is not None:
         items = [c for c in items if c.score >= floor]
+    if not items:
+        return []
+    div = _Diversity(items, diversity)
+    index = {id(c): i for i, c in enumerate(items)}
+    scores = np.array([c.score for c in items])
+    taken = np.zeros(len(items), dtype=bool)
+
+    def pick(rows: list[int]) -> int:
+        gain = scores[rows] - div.penalty(rows)
+        return rows[int(np.argmax(gain))]
+
     bucket = bucket or (lambda c: (c.when.year, c.when.month))
     groups: dict = {}
     for c in items:
         groups.setdefault(bucket(c), []).append(c)
     alloc = allocate({k: len(v) for k, v in groups.items()}, n)
-    chosen: list[Candidate] = []
     for key in sorted(groups):
         quota = alloc[key]
         if not quota:
@@ -509,20 +591,22 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
         left = {i: min(len(m), moment_cap(len(m))) for i, m in enumerate(ms)}
         if sum(left.values()) < quota:  # pas assez de moments : on relâche le plafond
             left = {i: len(m) for i, m in enumerate(ms)}
-        moment_of = {id(c): i for i, m in enumerate(ms) for c in m}
-        pool = [c for c in groups[key]]
+        moment_of = {index[id(c)]: i for i, m in enumerate(ms) for c in m}
+        pool = [index[id(c)] for c in groups[key]]
         for _ in range(quota):
-            open_ = [c for c in pool if left[moment_of[id(c)]] > 0]
+            open_ = [r for r in pool if not taken[r] and left[moment_of[r]] > 0]
             if not open_:
                 break
-            best = max(open_, key=lambda c: c.score - diversity_penalty(c, chosen, diversity))
-            chosen.append(best)
-            pool.remove(best)
-            left[moment_of[id(best)]] -= 1
-    if floor is not None and len(chosen) < n:  # places libres : les meilleures restantes, toutes périodes
-        rest = [c for c in items if c not in chosen]
-        while rest and len(chosen) < n:
-            best = max(rest, key=lambda c: c.score - diversity_penalty(c, chosen, diversity))
-            chosen.append(best)
-            rest.remove(best)
-    return sorted(chosen, key=lambda c: c.when)
+            best = pick(open_)
+            taken[best] = True
+            div.add(best)
+            left[moment_of[best]] -= 1
+    if floor is not None and taken.sum() < n:  # places libres : les meilleures restantes, toutes périodes
+        while taken.sum() < n:
+            rest = list(np.nonzero(~taken)[0])
+            if not rest:
+                break
+            best = pick(rest)
+            taken[best] = True
+            div.add(best)
+    return sorted((items[i] for i in np.nonzero(taken)[0]), key=lambda c: c.when)
