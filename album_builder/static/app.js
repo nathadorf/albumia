@@ -145,9 +145,23 @@ $("#btn-login").addEventListener("click", async () => { if (await doLogin()) boo
 async function loadThemes() {
   let themes = [];
   try { themes = await api("/api/themes"); } catch { return; }
+  state.themes = Object.fromEntries(themes.map((t) => [t.key, t]));
   $("#f-theme").append(...themes.map((t) => el("option", { value: t.key }, t.label)));
 }
-function syncThemeToggle() { $("#theme-strict-toggle").hidden = !$("#f-theme").value; }
+function syncThemeToggle() {
+  const t = (state.themes || {})[$("#f-theme").value];
+  // seulement pour un lieu ou une occasion : une ambiance (vacances, câlins…) n'écarte rien
+  $("#theme-strict-toggle").hidden = !(t && t.strict);
+  if (!(t && t.strict)) $("#f-theme-strict").checked = false;
+  const hint = state.intent && state.intent.holiday_hint, h = (state.themes || {})[hint];
+  const box = $("#holiday-hint");
+  box.hidden = !h || $("#f-theme").value === hint;
+  if (!box.hidden) {
+    box.replaceChildren(`Cette période contient ${h.label}. `, el("button", { type: "button", class: "btn small", onclick: () => {
+      $("#f-theme").value = hint; state.dirty.add("theme"); syncThemeToggle();
+    } }, `Choisir le thème ${h.label}`));
+  }
+}
 $("#f-theme").addEventListener("change", () => {
   state.dirty.add("theme");
   if (!state.dirty.has("theme-strict")) {
@@ -542,7 +556,7 @@ function buildRequest(extra = {}) {
     faces_only: $("#f-portraits").checked,
     theme: $("#f-theme").value,
     family: !!(state.intent && state.intent.family),
-    theme_strict: !!$("#f-theme").value && $("#f-theme-strict").checked,
+    theme_strict: !$("#theme-strict-toggle").hidden && $("#f-theme-strict").checked,
     use_claude: $("#f-claude").checked,
     ...extra,
   };

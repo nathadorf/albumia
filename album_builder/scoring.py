@@ -279,7 +279,10 @@ def local_score(
             parts[k] = float(editor[k])
     if "emotion" in parts and focus and parts["frontal"] < 0.2:
         parts["emotion"] *= 0.6  # CLIP voit un moment tendre ; la famille voit une enfant de profil
-    comp = meta.get("comp")
+    comp = dict(meta.get("comp") or {})
+    tiles = comp.pop("lap_tiles", None)
+    if tiles is not None and not focus:  # sans visage : la zone la plus nette compte
+        parts["sharpness"] = max(parts["sharpness"], sharp_score(tiles, SHARP_RANGE_GLOBAL))
     if comp:
         parts.update({k: float(v) for k, v in comp.items()})
         if focus:
@@ -502,7 +505,10 @@ def _theme_sims(vecs, theme_vec):
     if not ids:
         return ids, np.zeros(0), np.zeros((0, 0))
     mat = np.asarray([vecs[i] for i in ids], dtype=float)
-    return ids, mat @ np.asarray(theme_vec, dtype=float), mat
+    sims = mat @ np.asarray(theme_vec, dtype=float).T
+    if sims.ndim == 2:  # plusieurs descriptions du thème : la plus ressemblante compte
+        sims = sims.max(axis=1)
+    return ids, sims, mat
 
 
 def theme_found(vecs: dict[str, list[float]], theme_vec, margin: float = THEME_STRICT_MARGIN + THEME_FOUND_EXTRA) -> bool:

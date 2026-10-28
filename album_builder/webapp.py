@@ -566,7 +566,8 @@ def build():
         faces_only=bool(b.get("faces_only")), use_claude=use_claude,
         describe=b.get("prompt", ""), weights=weights,
         theme=b.get("theme") if b.get("theme") in intent.THEMES else "",
-        theme_strict=bool(b.get("theme_strict")), family=bool(b.get("family")),
+        theme_strict=bool(b.get("theme_strict")) and b.get("theme") in intent.THEMES
+        and intent.THEMES[b["theme"]][3], family=bool(b.get("family")),
     )
     client = gphotos.GooglePhotosSource(ROOT) if folder == gphotos.SOURCE else drive()
 

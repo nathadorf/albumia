@@ -106,9 +106,12 @@ def album_theme(params, files, editor, model_dir: Path, rep) -> dict[str, tuple[
     """Note du thème pour chaque photo ; un thème strict trop rare devient une simple préférence."""
     if not params.theme:
         return {}
-    label, prompt = intent.THEMES[params.theme][1:3]
+    label, prompt, strict_kind = intent.THEMES[params.theme][1:4]
+    params.theme_strict = params.theme_strict and strict_kind  # une ambiance n'écarte jamais
+    prompts = prompt if isinstance(prompt, list) else [prompt]
     vecs = {f.id: (editor.get(f.id) or {}).get("vec") for f in files}
-    tvec = aesthetic.theme_vector(model_dir, prompt, rep.note) if any(vecs.values()) else None
+    tvecs = [aesthetic.theme_vector(model_dir, x, rep.note) for x in prompts] if any(vecs.values()) else [None]
+    tvec = None if any(v is None for v in tvecs) else (tvecs[0] if len(tvecs) == 1 else np.vstack(tvecs))
     if tvec is None:
         rep.note(f"Thème « {label} » non pris en compte : l'œil d'éditeur n'est pas disponible.")
         return {}

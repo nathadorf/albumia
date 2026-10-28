@@ -12,7 +12,7 @@ import math
 import cv2
 import numpy as np
 
-VERSION = 1
+VERSION = 2  # 2 : netteté par zones (lap_tiles)
 
 
 def _clip(x: float) -> float:
@@ -117,6 +117,16 @@ def contrast(gray: np.ndarray) -> float:
     return _clip(((hi - lo) / 255.0 - 0.35) / 0.5)
 
 
+def tiles_sharpness(gray: np.ndarray, grid: int = 4) -> float:
+    """Netteté de la zone la plus nette (90e centile sur 4×4 zones) : un château gonflable net
+    avec de grands aplats de couleur n'est pas une photo floue."""
+    h, w = gray.shape
+    lap = cv2.Laplacian(gray, cv2.CV_64F)
+    vals = [lap[i * h // grid:(i + 1) * h // grid, j * w // grid:(j + 1) * w // grid].var()
+            for i in range(grid) for j in range(grid)]
+    return float(np.percentile(vals, 90))
+
+
 def measure(img: np.ndarray, boxes) -> dict[str, float]:
     """Critères qui demandent l'image (les autres se calculent depuis les visages en cache)."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -126,4 +136,5 @@ def measure(img: np.ndarray, boxes) -> dict[str, float]:
         "level": round(level(gray), 4),
         "color": round(colorfulness(img), 4),
         "contrast": round(contrast(gray), 4),
+        "lap_tiles": round(tiles_sharpness(gray), 2),
     }

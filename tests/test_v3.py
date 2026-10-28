@@ -431,7 +431,8 @@ class ThemeTests(unittest.TestCase):
 
         self.assertEqual(theme_of("nos vacances à la plage"), ("plage", True))
         self.assertEqual(theme_of("des câlins"), ("calins", False))
-        self.assertEqual(theme_of("des câlins, seulement"), ("calins", True))
+        self.assertEqual(theme_of("des câlins, seulement"), ("calins", False))  # une ambiance n'écarte pas
+        self.assertEqual(theme_of("vacances, seulement"), ("vacances", False))
         self.assertEqual(theme_of("parce que je l'aime"), ("", False))
         it = interpret("30 photos de l'anniversaire d'Arié", ["Arié"])
         self.assertEqual(it.theme, "anniversaire")
@@ -531,3 +532,19 @@ class FamilyHolidayTests(unittest.TestCase):
         others = lambda sel: sum(1 for c in sel if "Perla" in c.labels)
         self.assertGreater(others(fam), others(plain))
         self.assertGreaterEqual(others(fam), 3)
+
+    def test_period_containing_a_holiday_is_flagged(self):
+        it = interpret("Vacances en Israël octobre 2025", self.FAMILY, today=self.TODAY)
+        self.assertEqual(it.theme, "vacances")
+        self.assertFalse(it.theme_strict)
+        self.assertEqual(it.holiday_hint, "souccot")
+        self.assertEqual(interpret("Été 2025", self.FAMILY, today=self.TODAY).holiday_hint, "")
+
+    def test_flat_but_sharp_scene_is_not_blurry(self):
+        f = feat()
+        f["lap_center"], f["faces"] = 60.0, []
+        low, _ = scoring.local_score(f, set(), [], scoring.Weights(), [], [], {})
+        _, parts = scoring.local_score(f, set(), [], scoring.Weights(), [], [], {"comp": {"lap_tiles": 900.0}})
+        self.assertLess(scoring.subject_sharpness(f, []), scoring.REJECT_SHARPNESS)
+        self.assertGreater(parts["sharpness"], 0.5)
+        self.assertNotIn("lap_tiles", parts)

@@ -67,7 +67,10 @@ THEMES = {
               "a family meal or a child cooking in the kitchen", True),
     "velo": (r"velos?|trottinette|draisienne", "Le vélo", "a child riding a bike or a scooter", True),
     "vacances": (r"vacances|voyage|sorties?|excursions?", "Vacances",
-                 "a family on vacation outdoors, at the beach, a pool or a park", False),
+                 ["a family on vacation outdoors, at the beach, a pool or a park",
+                  "a family trip, sightseeing in a city or at a famous place",
+                  "children on an airplane or at the airport with suitcases",
+                  "a family at a hotel, eating together on holiday"], False),
     "calins": (r"calins?|tendresse|bisous?|dans les bras", "Tendresse",
                "a tender hug between a parent and a child", False),
     "fratrie": (r"freres? et s(?:oeu|œu)rs?|fratrie|complicite|jouent ensemble", "Complicité",
@@ -119,6 +122,7 @@ class Intent:
     faces_only: bool = False
     favor_smiles: bool = False
     family: bool = False           # « en famille » : au moins un membre de la famille par photo
+    holiday_hint: str = ""         # fête juive pendant la période demandée (clé de THEMES)
     theme: str = ""                # clé de THEMES, ou vide
     theme_strict: bool = False     # seulement les photos du thème
     understood: list[str] = field(default_factory=list)  # phrases courtes affichées à l'écran
@@ -153,8 +157,8 @@ def theme_of(text: str) -> tuple[str, bool]:
     # un lieu ou une occasion (« vacances à la plage ») passe avant une ambiance
     key = min(found, key=lambda f: (not THEMES[f[1]][3], f[0]))[1]
     strict = THEMES[key][3]
-    if re.search(r"\b(?:seulement|uniquement|que des)\b", t):
-        strict = True
+    if THEMES[key][3] and re.search(r"\b(?:seulement|uniquement|que des)\b", t):
+        strict = True  # une ambiance (vacances, câlins…) n'écarte jamais les autres photos
     return key, strict
 
 
@@ -175,6 +179,20 @@ def _holiday(t: str, years: list[int], today: date) -> tuple[date | None, date |
                 lo, hi = holiday(key, year - 1)
             return lo, hi, f"{label} {hi.year if key == 'hanouka' and not years else lo.year}"
     return None, None, ""
+
+
+def holiday_in(lo: date, hi: date) -> str:
+    """La fête juive (qui a un thème) dont le cœur tombe dans la période, ou ''."""
+    from .hebcal import holiday
+
+    for year in range(lo.year, hi.year + 1):
+        for key in HOLIDAYS:
+            if key not in THEMES:
+                continue
+            start, end = holiday(key, year)
+            if lo <= start + timedelta(days=1) <= hi:
+                return key
+    return ""
 
 
 def _period(t: str, today: date) -> tuple[date | None, date | None, str]:
@@ -304,6 +322,9 @@ def interpret(text: str, people: list[str], selected: list[str] | None = None,
     if it.theme:
         it.understood.append(f"thème : {THEMES[it.theme][1].lower()}"
                              + (" (seulement)" if it.theme_strict else ""))
+
+    if it.date_from and not _holiday(t, [], today)[0] and it.theme not in HOLIDAYS:
+        it.holiday_hint = holiday_in(date.fromisoformat(it.date_from), date.fromisoformat(it.date_to))
 
     it.name = _album_name(text or "", [] if it.family else targets, label, today)
     if it.family and not re.search(r"[«\"“]", text or ""):
