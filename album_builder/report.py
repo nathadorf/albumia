@@ -61,13 +61,19 @@ def write_plan(
 
 def _write_html(out_dir: Path, plan: dict) -> None:
     cards = []
+    chapters = plan.get("chapters") or []
+    current = None
     for p in plan["photos"]:
+        if chapters and p.get("chapter") != current and p.get("chapter") is not None:
+            current = p["chapter"]
+            cards.append(f"<h2 class='chapter'>{html.escape(chapters[current]['title'])}</h2>")
         people = ", ".join(p["people"]) or "—"
         parts = " · ".join(f"{k} {v:.2f}" for k, v in p["parts"].items())
         note = f"<div class='note'>{html.escape(p['note'])}</div>" if p["note"] else ""
+        cover = " ★ couverture" if p["id"] == plan.get("cover") else ""
         cards.append(
             f"<figure><img loading='lazy' src='thumbs/{html.escape(p['id'])}.jpg'>"
-            f"<figcaption><b>{html.escape(p['date'][:10])}</b> · {html.escape(p['name'])}<br>"
+            f"<figcaption><b>{html.escape(p['date'][:10])}</b> · {html.escape(p['name'])}{cover}<br>"
             f"score {p['score']:.2f} · personnes : {html.escape(people)}<br>"
             f"<small>{html.escape(parts)}</small>{note}</figcaption></figure>"
         )
@@ -80,6 +86,7 @@ def _write_html(out_dir: Path, plan: dict) -> None:
  figure{{margin:0;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px #0002}}
  img{{width:100%;display:block}} figcaption{{padding:8px 10px;font-size:13px;line-height:1.4}}
  .note{{margin-top:4px;color:#555;font-style:italic}} small{{color:#777}}
+ .chapter{{grid-column:1/-1;margin:18px 0 0;font-size:18px}}
 </style>
 <h1>{html.escape(plan['album_name'])}</h1>
 <p>{len(plan['photos'])} photos retenues sur {s.get('listed', '?')} listées

@@ -326,3 +326,23 @@ class ShortlistAndFlagsTests(unittest.TestCase):
         self.assertFalse(pipeline.is_tiny(C))                    # un lieu qui compte, même loin
         C.meta, C.note = {"subject_area": 0.0}, "Jeux dehors"
         self.assertFalse(pipeline.is_tiny(C))                    # sans visage : ce n'est pas un sujet minuscule
+
+
+class ReportTests(unittest.TestCase):
+    def test_contact_sheet_shows_chapters_and_cover(self):
+        from album_builder import report
+        from tests.test_scoring import cand
+
+        photos = [cand(i, datetime(2025, 10, 7 + i // 3, 10, i % 3), 0.5) for i in range(6)]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            layout = {"chapters": [{"title": "Mardi 7 octobre", "start": "", "end": ""},
+                                   {"title": "Mercredi 8 octobre · Piscine", "start": "", "end": ""}],
+                      "cover": "id4", "of": {c.file_id: {"chapter": i // 3} for i, c in enumerate(photos)}}
+            path = report.write_plan(tmp / "out", "Test", {}, photos, tmp / "thumbs", {}, [], layout)
+            plan = json.loads(path.read_text(encoding="utf-8"))
+            sheet = (path.parent / "plan.html").read_text(encoding="utf-8")
+        self.assertEqual(plan["cover"], "id4")
+        self.assertEqual([p["chapter"] for p in plan["photos"]], [0, 0, 0, 1, 1, 1])
+        self.assertIn("Mercredi 8 octobre · Piscine", sheet)
+        self.assertEqual(sheet.count("couverture"), 1)

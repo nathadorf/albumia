@@ -489,14 +489,15 @@ def _take_row(c: Candidate) -> dict[str, float]:
 
 def takes_report(plan_paths: list[Path], workdir: Path, out=print) -> dict:
     """Parmi les prises d'un même moment, laquelle la famille a-t-elle gardée ? Pour chaque critère :
-    part des paires (prise gardée, prise retirée « doublon ») où la prise gardée a la meilleure valeur.
+    part des paires (prise gardée, prise retirée en « doublon » ou échangée) où la prise gardée a la meilleure valeur.
     Puis des poids ajustés sur ces paires (peu de paires : à prendre comme une indication)."""
     pairs = []
     for path in plan_paths:
         plan = json.loads(Path(path).read_text(encoding="utf-8"))
         review = plan.get("review") or {}
         kept = set(review.get("ids", []))
-        dups = {r["id"] for r in review.get("removed", []) if r.get("reason") == "doublon"}
+        # « doublon » : une autre prise du moment est gardée ; « échange » : remplacée par une autre prise (⇄)
+        dups = {r["id"] for r in review.get("removed", []) if r.get("reason") in ("doublon", "echange")}
         for group in find_moments(_load_candidates(plan, workdir)):
             pairs += [(w, l) for w in group if w.file_id in kept for l in group if l.file_id in dups]
     out(f"{len(pairs)} paires (prise gardée, prise retirée en doublon) dans un même moment.")
