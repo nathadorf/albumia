@@ -80,7 +80,7 @@ THEMES = {
 # le bain gardait papa assis dans une baignoire vide. Écart au-dessus de la médiane du dossier :
 THEME_MARGIN = {"dehors": 0.04, "zoo": 0.06, "velo": 0.04, "repas": 0.04, "bain": 0.06, "neige": 0.06}
 # le thème existe dans le dossier si 5 photos dépassent la médiane de tant (défaut : marge + 0,02)
-THEME_FOUND = {"repas": 0.04, "zoo": 0.07}
+THEME_FOUND = {"repas": 0.04, "zoo": 0.06}
 # ce qui ressemble au thème sans en être : la photo doit ressembler plus au thème qu'à ça
 THEME_NOT = {
     "bain": "an empty bathtub, an adult in a bathroom",
