@@ -53,7 +53,7 @@ class Weights:
     faces: float = 0.20
     smile: float = 0.08               # détecteur de sourire approximatif (≈ 1 sur 2 juste)
     eyes: float = 0.03                # détecteur d'yeux ouverts peu fiable : poids faible
-    frontal: float = 0.06             # regarde vers l'objectif
+    frontal: float = 0.10             # regarde vers l'objectif (il retire les profils, même tendres)
     exposure: float = 0.07
     resolution: float = 0.06          # assez grande pour un tirage
     beauty: float = 0.10              # œil d'éditeur (CLIP) : AUC 0,61 sur la sélection de référence
@@ -275,6 +275,8 @@ def local_score(
     for k in ("beauty", "emotion"):
         if k in editor:
             parts[k] = float(editor[k])
+    if "emotion" in parts and focus and parts["frontal"] < 0.2:
+        parts["emotion"] *= 0.6  # CLIP voit un moment tendre ; la famille voit une enfant de profil
     comp = meta.get("comp")
     if comp:
         parts.update({k: float(v) for k, v in comp.items()})
