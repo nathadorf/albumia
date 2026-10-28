@@ -97,20 +97,7 @@ class Judge:
                 return {k: (np.array(v[0]), np.array(v[1])) for k, v in saved["criteria"].items()}
         except (OSError, ValueError, KeyError):
             pass
-        tok = Tokenizer.from_file(str(paths["clip_tokenizer.json"]))
-        tok.enable_padding(length=77, pad_id=49407)
-        tok.enable_truncation(max_length=77)
-        sess = ort.InferenceSession(str(paths["clip_text.onnx"]), providers=["CPUExecutionProvider"])
-        names = [i.name for i in sess.get_inputs()]
-
-        def embed(texts):
-            enc = tok.encode_batch(texts)
-            feeds = {"input_ids": np.array([e.ids for e in enc], dtype=np.int64)}
-            if "attention_mask" in names:
-                feeds["attention_mask"] = np.array([e.attention_mask for e in enc], dtype=np.int64)
-            out = _pick_embeds(sess, sess.run(None, feeds))
-            return out / np.linalg.norm(out, axis=1, keepdims=True)
-
+        embed = _text_embedder(ort, Tokenizer, paths)
         vectors = {k: (embed(pos), embed(neg)) for k, (pos, neg) in CRITERIA.items()}
         vectors["_scenes"] = (embed(list(SCENES.values())), np.zeros((0, 1)))
         cache_path.write_text(json.dumps({"v": VERSION, "criteria": {
@@ -132,6 +119,51 @@ class Judge:
 
     def scene(self, vec) -> str:
         return scene_of(np.asarray(vec, dtype=float), self.text_vectors["_scenes"][0])
+
+
+def _text_embedder(ort, Tokenizer, paths):
+    tok = Tokenizer.from_file(str(paths["clip_tokenizer.json"]))
+    tok.enable_padding(length=77, pad_id=49407)
+    tok.enable_truncation(max_length=77)
+    sess = ort.InferenceSession(str(paths["clip_text.onnx"]), providers=["CPUExecutionProvider"])
+    names = [i.name for i in sess.get_inputs()]
+
+    def embed(texts):
+        enc = tok.encode_batch(texts)
+        feeds = {"input_ids": np.array([e.ids for e in enc], dtype=np.int64)}
+        if "attention_mask" in names:
+            feeds["attention_mask"] = np.array([e.attention_mask for e in enc], dtype=np.int64)
+        out = _pick_embeds(sess, sess.run(None, feeds))
+        return out / np.linalg.norm(out, axis=1, keepdims=True)
+
+    return embed
+
+
+def theme_vector(model_dir: Path, prompt: str, note=print) -> np.ndarray | None:
+    """Description du thème -> vecteur CLIP (gardé dans models/clip_themes.json)."""
+    cache_path = model_dir / "clip_themes.json"
+    try:
+        saved = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        saved = {}
+    if prompt in saved:
+        return np.asarray(saved[prompt], dtype=float)
+    if os.environ.get("ALBUMIA_NO_EDITOR"):
+        return None
+    try:
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        paths = {name: vision.ensure_model(model_dir / name, (HF + src, MIRROR + src))
+                 for name, src in FILES.items() if name != "clip_vision.onnx"}
+        vec = _text_embedder(ort, Tokenizer, paths)([prompt])[0]
+    except Exception as e:  # pas de modèle : l'album se fait sans le thème
+        note(f"Thème non pris en compte ({e}).")
+        return None
+    saved[prompt] = [round(float(x), 5) for x in vec]
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(saved), encoding="utf-8")
+    return np.asarray(saved[prompt], dtype=float)
 
 
 def scene_of(img_vec: np.ndarray, scene_vectors: np.ndarray) -> str:

@@ -26,6 +26,38 @@ NUMBER_WORDS = {"dix": 10, "quinze": 15, "vingt": 20, "trente": 30, "quarante": 
 TOGETHER = ("ensemble", "tous", "toutes", "reunis", "les deux", "les trois", "en famille")
 SMILES = ("sourire", "souriant", "rire", "rires", "joie", "joyeu", "heureu", "fou rire", "complice", "rigol")
 PORTRAITS = ("portrait", "visage", "gros plan")
+# thème -> (mots qui le déclenchent, libellé, description pour l'œil d'éditeur, strict)
+# strict : un lieu ou une occasion, les photos hors thème sont écartées ;
+# sinon c'est une ambiance, les photos du thème passent seulement devant les autres.
+THEMES = {
+    "plage": (r"plages?|bord de (?:la )?mer|la mer|sable", "La plage",
+              "a family at the beach with sand and sea", True),
+    "piscine": (r"piscines?|baignades?|nager", "La piscine", "a child swimming in a pool", True),
+    "bain": (r"bains?|baignoire", "Le bain", "a child in the bath", True),
+    "neige": (r"neige|ski|luge|bonhomme de neige", "La neige", "children playing in the snow", True),
+    "anniversaire": (r"anniversaires?|anniv", "Anniversaire",
+                     "a birthday party with a cake and candles", True),
+    "fete": (r"fetes?|soirees?", "La fête", "a family party with decorations", True),
+    "noel": (r"noel|sapin", "Noël", "christmas with a decorated tree and presents", True),
+    "hanouka": (r"hanouk+a|hanouc+a|chanouk+a|bougies de hanouk+a|menorah?", "Hanouka",
+                "lighting the candles of a hanukkah menorah", True),
+    "shabbat": (r"shabbat|chabbat|chabat", "Shabbat", "a family shabbat dinner with candles and challah", True),
+    "pourim": (r"pourim|deguisements?|deguises?", "Pourim", "a child wearing a costume", True),
+    "zoo": (r"zoo|animaux|ferme", "Les animaux", "a child looking at animals at the zoo or a farm", True),
+    "dehors": (r"dehors|parcs?|jardins?|nature|foret|en plein air|exterieur|balades?|promenades?",
+               "Dehors", "a child playing outdoors in a park or garden", True),
+    "maison": (r"a la maison|interieur|chez nous", "À la maison", "a child at home indoors", True),
+    "repas": (r"repas|a table|manger|cuisine|patisserie", "À table",
+              "a family meal or a child cooking in the kitchen", True),
+    "velo": (r"velos?|trottinette|draisienne", "Le vélo", "a child riding a bike or a scooter", True),
+    "calins": (r"calins?|tendresse|bisous?|dans les bras", "Tendresse",
+               "a tender hug between a parent and a child", False),
+    "fratrie": (r"freres? et s(?:oeu|œu)rs?|fratrie|complicite|jouent ensemble", "Complicité",
+                "siblings playing together and laughing", False),
+    "dodo": (r"dodo|dort|sommeil|endormie?s?", "Dodo", "a sleeping baby", False),
+    "lumiere": (r"lumiere|coucher de soleil|golden hour|soleil", "La lumière",
+                "a photo in warm golden sunset light", False),
+}
 DEFAULT_COUNT = 50
 MAX_COUNT = 500
 
@@ -55,6 +87,8 @@ class Intent:
     bonus: list[str] = field(default_factory=list)
     faces_only: bool = False
     favor_smiles: bool = False
+    theme: str = ""                # clé de THEMES, ou vide
+    theme_strict: bool = False     # seulement les photos du thème
     understood: list[str] = field(default_factory=list)  # phrases courtes affichées à l'écran
 
     def to_dict(self) -> dict:
@@ -72,6 +106,23 @@ def _count(t: str) -> int | None:
     if m:
         return NUMBER_WORDS[m.group(1)]
     return None
+
+
+def theme_of(text: str) -> tuple[str, bool]:
+    """Le thème cité en premier dans le texte, et s'il est strict (« ... seulement »)."""
+    t = normalize(text or "")
+    found = []
+    for key, (words, *_rest) in THEMES.items():
+        m = re.search(rf"(?<![a-z])(?:{words})(?![a-z])", t)
+        if m:
+            found.append((m.start(), key))
+    if not found:
+        return "", False
+    key = min(found)[1]
+    strict = THEMES[key][3]
+    if re.search(r"\b(?:seulement|uniquement|que des)\b", t):
+        strict = True
+    return key, strict
 
 
 def _end_of_month(year: int, month: int) -> date:
@@ -190,6 +241,11 @@ def interpret(text: str, people: list[str], selected: list[str] | None = None,
     if any(w in t for w in SMILES):
         it.favor_smiles = True
         it.understood.append("priorité aux sourires")
+
+    it.theme, it.theme_strict = theme_of(text)
+    if it.theme:
+        it.understood.append(f"thème : {THEMES[it.theme][1].lower()}"
+                             + (" (seulement)" if it.theme_strict else ""))
 
     it.name = _album_name(text or "", targets, label, today)
     if it.period_label and it.period_label != label:  # période définie par l'âge

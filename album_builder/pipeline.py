@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import aesthetic, compose, people, scoring, taste, vision
+from . import aesthetic, compose, intent, people, scoring, taste, vision
 from .errors import AlbumError, Cancelled
 from .report import slugify, write_plan
 
@@ -99,6 +99,30 @@ def judge_photos(files, cache, thumbs_dir: Path, editor_path: Path, model_dir: P
     return editor
 
 
+MIN_THEMED = 8  # en dessous, un thème strict ne ferait qu'un album minuscule
+
+
+def album_theme(params, files, editor, model_dir: Path, rep) -> dict[str, tuple[float, bool]]:
+    """Note du thème pour chaque photo ; un thème strict trop rare devient une simple préférence."""
+    if not params.theme:
+        return {}
+    label, prompt = intent.THEMES[params.theme][1:3]
+    vecs = {f.id: (editor.get(f.id) or {}).get("vec") for f in files}
+    tvec = aesthetic.theme_vector(model_dir, prompt, rep.note) if any(vecs.values()) else None
+    if tvec is None:
+        rep.note(f"Thème « {label} » non pris en compte : l'œil d'éditeur n'est pas disponible.")
+        return {}
+    themed = scoring.theme_scores(vecs, {f.id: f.when.date() for f in files}, tvec)
+    inside = sum(1 for _, ok in themed.values() if ok)
+    if params.theme_strict and inside < min(params.count, MIN_THEMED):
+        rep.note(f"Seulement {inside} photo(s) sur le thème « {label} » : je les mets en avant "
+                 "sans écarter les autres.")
+        params.theme_strict = False
+    else:
+        rep.note(f"Thème « {label} » : {inside} photos y correspondent.")
+    return themed
+
+
 def parse_folder_id(value: str) -> str:
     value = (value or "").strip()
     m = re.search(r"/folders/([A-Za-z0-9_-]+)", value) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", value)
@@ -130,6 +154,8 @@ class BuildParams:
     weights: scoring.Weights = field(default_factory=scoring.Weights)
     workers: int = 6
     reserve: int = 60                         # photos de remplacement proposées à la relecture
+    theme: str = ""                           # clé de intent.THEMES (plage, anniversaire…)
+    theme_strict: bool = False                # seulement les photos du thème
 
 
 class Reporter:
@@ -285,6 +311,7 @@ def build_plan(
     births = people.births(refs_dir)
     ref_sets = {n: [(e, dates.get(n, {}).get(photo)) for photo, e in v] for n, v in ref_photos.items()}
     refs_by_month: dict = {}
+    themed = album_theme(params, files, editor, model_dir, rep)
     all_parts: dict[str, dict] = {}
     cands: list[scoring.Candidate] = []
     reasons = taste.excluded_reasons(workdir)
@@ -301,7 +328,7 @@ def build_plan(
         if vec and fid in by_id:
             banned_vecs.setdefault(by_id[fid].when.date(), []).append((by_id[fid].name, vec))
     rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
-                "personne trop petite": 0, "sans visage": 0}
+                "personne trop petite": 0, "sans visage": 0, "hors thème": 0}
     for f in files:
         entry = cache.get(f.id)
         if f.id in banned:
@@ -353,6 +380,8 @@ def build_plan(
             rejected["personne trop petite"] += 1
         elif params.faces_only and not faces:
             rejected["sans visage"] += 1
+        elif params.theme_strict and themed and not themed.get(f.id, (0, False))[1]:
+            rejected["hors thème"] += 1
         else:
             cands.append(c)
     _save_cache(workdir / ".cache" / "parts.json", all_parts)  # pour mesurer le goût (taste --eval)
@@ -362,6 +391,10 @@ def build_plan(
         for c in cands:
             c.parts["taste"] = liked.predict(c.parts)
             c.local_score = c.score = (1 - taste.WEIGHT) * c.score + taste.WEIGHT * c.parts["taste"]
+    if themed:
+        for c in cands:
+            c.parts["theme"] = themed.get(c.file_id, (0.5, False))[0]
+            c.local_score = c.score = (1 - scoring.THEME_WEIGHT) * c.score + scoring.THEME_WEIGHT * c.parts["theme"]
     rep.note(f"{len(cands)} photos retenues ; écartées : "
              + ", ".join(f"{k} {v}" for k, v in rejected.items() if v))
     if not cands:
@@ -396,7 +429,9 @@ def build_plan(
         rep.note(f"Répartition selon l'âge de {main}.")
     floor = scoring.quality_floor([c.score for c in pool])
     selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor)
-    if len(selected) < params.count:
+    if len(selected) < params.count and params.theme_strict and themed:
+        rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
+    elif len(selected) < params.count:
         rep.note(f"{len(selected)} photos seulement : les autres étaient trop faibles pour un album.")
     chosen = {c.file_id for c in selected}
     reserve = sorted((c for c in pool if c.file_id not in chosen), key=lambda c: c.score, reverse=True)
@@ -409,7 +444,7 @@ def build_plan(
         "from": params.date_from.date().isoformat() if params.date_from else None,
         "to": params.date_to.date().isoformat() if params.date_to else None,
         "must": params.must, "bonus": params.bonus, "use_claude": params.use_claude,
-        "describe": params.describe,
+        "describe": params.describe, "theme": params.theme, "theme_strict": params.theme_strict,
     }
     stats = {
         "listed": listed, "analyzed": len(files), "after_filters": len(cands),

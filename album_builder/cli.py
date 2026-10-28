@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import pipeline, scoring
+from . import intent, pipeline, scoring
 from .drive import SCOPES_FULL, SCOPES_LIGHT, DriveClient, get_credentials
 from .errors import AlbumError
 
@@ -43,6 +43,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Seuil de reconnaissance de visage (défaut %(default)s ; baissez-le si trop de ratés)")
     p.add_argument("--faces-only", action="store_true", help="Exclure les photos sans visage")
     p.add_argument("--describe", default="", help="Description de l'album (utilisée seulement avec --use-claude)")
+    p.add_argument("--theme", choices=sorted(intent.THEMES), help="Thème de l'album (plage, anniversaire, dehors…)")
+    p.add_argument("--theme-strict", action="store_true", help="Seulement les photos du thème")
     p.add_argument("--use-claude", action="store_true",
                    help="Reclasse les meilleures candidates avec Claude (envoie des miniatures à l'API)")
     p.add_argument("--workers", type=int, default=6, help="Analyses en parallèle (défaut : 6)")
@@ -81,6 +83,7 @@ def cmd_build(args) -> None:
         must=args.must, bonus=args.bonus, match_threshold=args.match_threshold,
         faces_only=args.faces_only, recursive=not args.no_recursive, use_claude=args.use_claude,
         describe=args.describe, workers=args.workers,
+        theme=args.theme or "", theme_strict=args.theme_strict,
     )
     plan_path = pipeline.build_plan(
         _client(args), params, Path(args.workdir), Path(args.out), Path(args.refs_dir)

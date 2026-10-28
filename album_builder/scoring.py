@@ -482,6 +482,39 @@ def quality_floor(scores: list[float]) -> float | None:
     return float(np.percentile(scores, QUALITY_FLOOR_PERCENTILE)) if len(scores) >= 10 else None
 
 
+# ---- thème de l'album -------------------------------------------------------------------------
+# La ressemblance CLIP entre une photo et la description du thème est comparée à la médiane du
+# dossier : une photo de plage ressort nettement au-dessus des autres photos de la même famille.
+THEME_SPREAD = 0.03         # écart (en similarité) qui fait passer la note de 0,27 à 0,73
+THEME_STRICT_MARGIN = 0.05  # thème strict : au moins ça au-dessus de la médiane
+THEME_EVENT_SHARE = 0.30    # une journée dont 30 % des photos sont dans le thème…
+THEME_EVENT_MIN = 3         # …(et au moins 3) : ses autres photos racontent le même moment
+THEME_WEIGHT = 0.25         # part du thème dans la note finale
+
+
+def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec) -> dict[str, tuple[float, bool]]:
+    """{photo: (note du thème de 0 à 1, dans le thème ?)}.
+
+    « Dans le thème » : nettement au-dessus de la médiane, ou prise le jour d'un événement du thème
+    (un anniversaire : le gâteau, mais aussi les invités et les cadeaux du même jour).
+    """
+    ids = [i for i, v in vecs.items() if v]
+    if not ids:
+        return {}
+    sims = np.asarray([vecs[i] for i in ids], dtype=float) @ np.asarray(theme_vec, dtype=float)
+    med = float(np.median(sims))
+    notes = 1.0 / (1.0 + np.exp(-(sims - med) / THEME_SPREAD))
+    strong = sims >= med + THEME_STRICT_MARGIN
+    per_day: dict = {}
+    for i, fid in enumerate(ids):
+        tot, hit = per_day.get(days.get(fid), (0, 0))
+        per_day[days.get(fid)] = (tot + 1, hit + int(strong[i]))
+    events = {d for d, (tot, hit) in per_day.items()
+              if d is not None and hit >= THEME_EVENT_MIN and hit / tot >= THEME_EVENT_SHARE}
+    return {fid: (round(float(notes[i]), 4), bool(strong[i] or (days.get(fid) in events and sims[i] >= med)))
+            for i, fid in enumerate(ids)}
+
+
 class _Diversity:
     """`diversity_penalty` pour toutes les photos d'un coup (numpy) : 5 000 photos en quelques secondes.
 

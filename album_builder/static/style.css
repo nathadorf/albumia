@@ -91,7 +91,7 @@ main { max-width: 920px; margin: 0 auto; padding: 8px 16px 120px; }
 .person.add .avatar { border: 2px dashed #d8cbbf; color: var(--muted); }
 
 /* --- description --- */
-textarea, input[type=text], input[type=url], input[type=number], input[type=date] {
+textarea, select, input[type=text], input[type=url], input[type=number], input[type=date] {
   width: 100%; font: inherit; color: inherit; background: #fffdfb;
   border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 14px; outline: none;
 }
@@ -108,7 +108,7 @@ textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px
 .understood-title { font-weight: 600; margin-bottom: 12px; }
 .fields { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 10px; }
 .field span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-.field input { padding: 9px 12px; }
+.field input, .field select { padding: 9px 12px; }
 .roles { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .role { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--line);
   border-radius: 999px; padding: 4px 6px 4px 4px; font-size: 14px; }

@@ -101,7 +101,7 @@ async function boot() {
   $("#account").hidden = false;
   $("#account").textContent = s.email ? `Connecté : ${s.email}` : "Google Drive connecté";
   $("#claude-toggle").hidden = !s.claude;
-  await loadPeople();
+  await Promise.all([loadPeople(), loadThemes()]);
   loadPastAlbums();
   restoreForm();
   show("screen-form");
@@ -140,6 +140,22 @@ async function doLogin(full = false) {
   }
 }
 $("#btn-login").addEventListener("click", async () => { if (await doLogin()) boot(); });
+
+// ------------------------------------------------------------------ thèmes
+async function loadThemes() {
+  let themes = [];
+  try { themes = await api("/api/themes"); } catch { return; }
+  $("#f-theme").append(...themes.map((t) => el("option", { value: t.key }, t.label)));
+}
+function syncThemeToggle() { $("#theme-strict-toggle").hidden = !$("#f-theme").value; }
+$("#f-theme").addEventListener("change", () => {
+  state.dirty.add("theme");
+  if (!state.dirty.has("theme-strict")) {
+    const t = state.intent && state.intent.theme === $("#f-theme").value ? state.intent.theme_strict : false;
+    $("#f-theme-strict").checked = t;
+  }
+  syncThemeToggle();
+});
 
 // ------------------------------------------------------------------ personnes
 async function loadPeople() {
@@ -344,6 +360,9 @@ async function runInterpret() {
   set("to", $("#f-to"), it.date_to || "");
   set("smiles", $("#f-smiles"), it.favor_smiles, "checked");
   set("portraits", $("#f-portraits"), it.faces_only, "checked");
+  set("theme", $("#f-theme"), it.theme || "");
+  set("theme-strict", $("#f-theme-strict"), !!it.theme_strict, "checked");
+  syncThemeToggle();
   if (!state.dirty.has("roles")) {
     state.roles = {};
     it.must.forEach((n) => (state.roles[n] = "must"));
@@ -378,7 +397,7 @@ $("#prompt").addEventListener("input", () => {
   store.set("prompt", $("#prompt").value);
   interpretSoon();
 });
-for (const [key, id] of [["name", "#f-name"], ["count", "#f-count"], ["from", "#f-from"], ["to", "#f-to"], ["smiles", "#f-smiles"], ["portraits", "#f-portraits"]]) {
+for (const [key, id] of [["name", "#f-name"], ["count", "#f-count"], ["from", "#f-from"], ["to", "#f-to"], ["smiles", "#f-smiles"], ["portraits", "#f-portraits"], ["theme-strict", "#f-theme-strict"]]) {
   $(id).addEventListener("input", () => state.dirty.add(key));
 }
 
@@ -460,6 +479,8 @@ function buildRequest(extra = {}) {
     bonus: names.filter((n) => state.roles[n] === "bonus"),
     favor_smiles: $("#f-smiles").checked,
     faces_only: $("#f-portraits").checked,
+    theme: $("#f-theme").value,
+    theme_strict: !!$("#f-theme").value && $("#f-theme-strict").checked,
     use_claude: $("#f-claude").checked,
     ...extra,
   };

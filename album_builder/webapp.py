@@ -407,6 +407,11 @@ def interpret():
     return jsonify(intent.interpret(body.get("prompt", ""), names, selected, births=births).to_dict())
 
 
+@app.get("/api/themes")
+def themes():
+    return jsonify([{"key": k, "label": v[1], "strict": v[3]} for k, v in intent.THEMES.items()])
+
+
 @app.post("/api/folder")
 def check_folder():
     link = (request.get_json(silent=True) or {}).get("link", "")
@@ -445,6 +450,8 @@ def build():
         match_threshold=scoring.LENIENT_MATCH_THRESHOLD if b.get("lenient") else scoring.DEFAULT_MATCH_THRESHOLD,
         faces_only=bool(b.get("faces_only")), use_claude=use_claude,
         describe=b.get("prompt", ""), weights=weights,
+        theme=b.get("theme") if b.get("theme") in intent.THEMES else "",
+        theme_strict=bool(b.get("theme_strict")),
     )
     client = drive()
 

@@ -1,4 +1,5 @@
 """Critères v3 : moments, variété, naissance, impression, apprentissage."""
+import numpy as np
 import tempfile
 import unittest
 import unittest.mock
@@ -420,3 +421,39 @@ class ExclusionReasonTests(unittest.TestCase):
         b.meta = {"vec": (np.array([1.0, 0.4]) / np.linalg.norm([1.0, 0.4])).tolist()}   # cos 0,93
         lone = cand(3, t + timedelta(minutes=5), 0.7, dhash=h(3))   # sans vecteur
         self.assertEqual({c.file_id for c in scoring.dedupe_bursts([a, b, lone])}, {"id1", "id3"})
+
+
+class ThemeTests(unittest.TestCase):
+    def test_theme_words_found_in_description(self):
+        from album_builder.intent import interpret, theme_of
+
+        self.assertEqual(theme_of("nos vacances à la plage"), ("plage", True))
+        self.assertEqual(theme_of("des câlins"), ("calins", False))
+        self.assertEqual(theme_of("des câlins, seulement"), ("calins", True))
+        self.assertEqual(theme_of("parce que je l'aime"), ("", False))
+        it = interpret("30 photos de l'anniversaire d'Arié", ["Arié"])
+        self.assertEqual(it.theme, "anniversaire")
+        self.assertIn("thème : anniversaire (seulement)", it.understood)
+
+    def test_theme_scores_relative_to_folder_and_event_days(self):
+        from datetime import date
+
+        from album_builder import scoring
+
+        t = np.array([1.0, 0.0])
+        def v(sim):
+            return [sim, float(np.sqrt(1 - sim * sim))]
+        d1, d2 = date(2026, 5, 1), date(2026, 6, 1)
+        vecs, days = {}, {}
+        for i in range(10):  # jour ordinaire : loin du thème
+            vecs[f"o{i}"], days[f"o{i}"] = v(0.20), d2
+        for i in range(4):   # anniversaire : gâteau bien visible…
+            vecs[f"g{i}"], days[f"g{i}"] = v(0.30), d1
+        vecs["invite"], days["invite"] = v(0.21), d1  # …et un invité, le même jour
+        vecs["ailleurs"], days["ailleurs"] = v(0.21), d2
+        out = scoring.theme_scores(vecs, days, t)
+        self.assertTrue(out["g0"][1])
+        self.assertGreater(out["g0"][0], 0.9)
+        self.assertTrue(out["invite"][1])        # même journée que l'événement
+        self.assertFalse(out["ailleurs"][1])     # même ressemblance, autre jour
+        self.assertFalse(out["o0"][1])

@@ -166,6 +166,37 @@ class PipelineEditorTests(unittest.TestCase):
             plan = json.loads(next((tmp / "out").rglob("plan.json")).read_text(encoding="utf-8"))
             self.assertTrue(plan["photos"])
 
+    def run_theme(self, tmp, scores=None):
+        from album_builder import aesthetic, cli, scoring
+
+        def fake_scores(vecs, days, t):  # une photo sur deux est « dehors »
+            return {fid: ((0.9, True) if i % 2 else (0.1, False)) for i, fid in enumerate(sorted(vecs))}
+
+        client = FakeClient(PipelineTests().make_files())
+        argv = ["--name", "Theme", "--count", "10", "--folder", "A" * 12, "--year", "2026",
+                "--theme", "dehors", "--theme-strict", "--workdir", str(tmp), "--out", str(tmp / "out")]
+        with mock.patch.object(cli, "_client", return_value=client), \
+             mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()), \
+             mock.patch.object(aesthetic, "load_judge", return_value=FakeJudge()), \
+             mock.patch.object(aesthetic, "theme_vector", return_value=np.array([0.0, 1.0, 0.0])), \
+             mock.patch.object(scoring, "theme_scores", side_effect=scores or fake_scores):
+            cli.main(argv)
+        return json.loads(next((tmp / "out").rglob("plan.json")).read_text(encoding="utf-8"))
+
+    def test_strict_theme_keeps_only_matching_photos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = self.run_theme(Path(tmp))
+        self.assertEqual(plan["settings"]["theme"], "dehors")
+        self.assertTrue(plan["settings"]["theme_strict"])
+        self.assertEqual(len(plan["photos"]), 10)
+        self.assertTrue(all(p["parts"]["theme"] == 0.9 for p in plan["photos"]))
+
+    def test_rare_strict_theme_becomes_a_preference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = self.run_theme(Path(tmp), scores=lambda vecs, days, t: {f: (0.2, False) for f in vecs})
+        self.assertFalse(plan["settings"]["theme_strict"])
+        self.assertEqual(len(plan["photos"]), 10)
+
     def test_without_model_album_still_works(self):
         from album_builder import aesthetic, cli
 
