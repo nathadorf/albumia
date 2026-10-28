@@ -29,6 +29,7 @@ MIN_SUBJECT_AREA = 0.015          # visage de la personne choisie < 1,5 % de la 
 
 PRINT_MIN_SIDE = (800, 1500)      # côté court de l'original (px) : 0 → 1 de note « impression »
 PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image de messagerie) : trop petite pour un album
+LARGE_EYE_SHARE = 0.65            # beauté et émotion : part de l'œil plus précis quand il a vu la photo
 SELFIE_PENALTY = 0.15             # quelqu'un d'autre (papa en selfie) au premier plan
 SAME_CONTENT_COS = (0.80, 0.95)   # CLIP : 0,80 = scène voisine, 0,95 = même scène (autre angle)
 SAME_SCENE_DUPLICATE = 0.88       # CLIP, photos à moins de 15 min : doublon (ses paires gardées : ≤ 0,84)
@@ -69,6 +70,17 @@ class Weights:
     color: float = 0.04               # couleurs vivantes (AUC 0,60)
     contrast: float = 0.0
     bonus: float = 0.16
+    # critères de photographes jugés par l'œil plus précis (aesthetic.PRO_CRITERIA). Mesurés sur les
+    # relectures de la famille avant d'être pondérés : à 0 ils servent d'abord au goût appris.
+    interaction: float = 0.0          # gestes et regards entre les personnes
+    eye_level: float = 0.0            # à hauteur d'enfant, pas vu d'en haut
+    light: float = 0.0                # lumière douce, pas de soleil dur ni de flash
+    tidy: float = 0.0                 # fond simple, pas de foule
+    face_seen: float = 0.0            # visage visible, pas de dos
+    moment: float = 0.0               # un vrai moment, pas de la routine
+
+
+PRO_KEYS = ("interaction", "eye_level", "light", "tidy", "face_seen", "moment")
 
 
 def file_number(name: str) -> int | None:
@@ -287,8 +299,17 @@ def local_score(
     for k in ("beauty", "emotion"):
         if k in editor:
             parts[k] = float(editor[k])
-    if "emotion" in parts and focus and parts["frontal"] < 0.2:
-        parts["emotion"] *= 0.6  # CLIP voit un moment tendre ; la famille voit une enfant de profil
+    large = meta.get("editor_l") or {}   # même jugement, avec l'œil plus précis (ViT-L/14)
+    for k in ("beauty", "emotion"):
+        if k in large:
+            parts[k + "_l"] = float(large[k])
+    for k in PRO_KEYS:
+        if k in large:
+            parts[k] = float(large[k])
+    if focus and parts["frontal"] < 0.2:
+        for k in ("emotion", "emotion_l"):
+            if k in parts:
+                parts[k] *= 0.6  # CLIP voit un moment tendre ; la famille voit une enfant de profil
     comp = dict(meta.get("comp") or {})
     tiles = comp.pop("lap_tiles", None)
     if tiles is not None and not focus:  # sans visage : la zone la plus nette compte
@@ -300,7 +321,11 @@ def local_score(
             main = max(focus, key=lambda f: f["box"][2] * f["box"][3])
             parts["placement"] = compose.placement(main["box"], feat["w"], feat["h"])
             parts["headroom"] = compose.headroom(main["box"], feat["w"], feat["h"])
-    w = {k: getattr(weights, k) for k in parts}
+    w = {k: getattr(weights, k, 0.0) for k in parts}
+    for k in ("beauty", "emotion"):   # l'œil plus précis prend la plus grande part du poids du critère
+        if k + "_l" in parts:
+            w[k + "_l"] = w[k] * LARGE_EYE_SHARE
+            w[k] *= 1.0 - LARGE_EYE_SHARE
     if bonus_labels:
         parts["bonus"] = sum(1 for b in bonus_labels if b in labels) / len(bonus_labels)
         w["bonus"] = weights.bonus
@@ -567,6 +592,38 @@ FAMILY_NEED = 0.06        # coup de pouce par personne encore trop peu présente
 FAMILY_TOO_MUCH = 0.10
 
 
+def _stack(vecs: list) -> tuple[np.ndarray, np.ndarray]:
+    dim = max((len(v) for v in vecs if v), default=0)
+    has = np.array([bool(v) and len(v) == dim for v in vecs], dtype=bool)
+    mat = np.array([v if has[i] else [0.0] * dim for i, v in enumerate(vecs)], dtype=float).reshape(len(vecs), dim)
+    return mat, has
+
+
+class Vectors:
+    """Ressemblance de contenu entre photos : l'œil plus précis (`vec_l`) quand les deux photos l'ont
+    vu, sinon l'œil habituel (`vec`). Les seuils dépendent donc du genre : {"L": …, "B": …}."""
+
+    def __init__(self, items: list[Candidate]):
+        self.L, self.hasL = _stack([c.meta.get("vec_l") for c in items])
+        self.B, self.hasB = _stack([c.meta.get("vec") for c in items])
+
+    def cos(self, i: int, j: int) -> tuple[float, str] | None:
+        if self.hasL[i] and self.hasL[j]:
+            return float(self.L[i] @ self.L[j]), "L"
+        if self.hasB[i] and self.hasB[j]:
+            return float(self.B[i] @ self.B[j]), "B"
+        return None
+
+    def near(self, j: int, threshold: dict[str, float]) -> np.ndarray:
+        """Les photos (j comprise) dont le contenu ressemble à celui de la photo j."""
+        out = np.zeros(len(self.hasL), dtype=bool)
+        if self.hasL[j]:
+            out |= self.hasL & (self.L @ self.L[j] >= threshold["L"])
+        if self.hasB[j]:
+            out |= self.hasB & ~(self.hasL & self.hasL[j]) & (self.B @ self.B[j] >= threshold["B"])
+        return out
+
+
 class _Diversity:
     """`diversity_penalty` pour toutes les photos d'un coup (numpy) : 5 000 photos en quelques secondes.
 
@@ -655,12 +712,16 @@ class _Diversity:
 def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25,
                   floor: float | None = None, family: list[str] | None = None,
                   decor_max: float | None = None, selfie_max: int | None = None,
-                  meal_max: int | None = None, pinned: set[str] | None = None) -> list[Candidate]:
+                  meal_max: int | None = None, pinned: set[str] | None = None,
+                  pose_cos: dict[str, float] | None = None, scene_cap: int | None = None,
+                  scene_exempt: frozenset | set = frozenset(), wide_max: int | None = None,
+                  size_of: dict[str, int] | None = None, event_cap=None) -> list[Candidate]:
     """Choisit n photos qui racontent la période.
 
     1. Les places sont réparties entre les périodes (mois, ou tranches d'âge avec `bucket`).
     2. Dans chaque période, chaque moment a un plafond : 1 photo pour un instant isolé, jusqu'à 3
-       pour un grand moment.
+       pour un grand moment (`event_cap` : autre plafond ; `size_of` : nombre de prises que
+       représente chaque photo quand les doublons ont déjà été regroupés).
     3. On prend d'abord la meilleure note, en pénalisant ce qui ressemble à ce qui est déjà choisi.
     4. Avec `floor`, une photo trop faible ne bouche pas un trou : la place passe à une autre
        période, ou reste vide (un album plus court vaut mieux qu'une photo ratée).
@@ -669,6 +730,9 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
     7. Avec `selfie_max`, au plus ce nombre de selfies (meta["selfie"]) ; avec `meal_max`, au plus
        ce nombre de repas (meta["meal"]).
     8. Les photos `pinned` (gardées à la relecture de ce même album) sont prises d'abord.
+    9. Avec `pose_cos` (seuils par genre, voir `Vectors`), jamais deux fois la même pose ; avec
+       `scene_cap`, au plus ce nombre de photos d'une même scène (sauf `scene_exempt`) ; avec
+       `wide_max`, au plus ce nombre de plans larges (meta["shot"] == "scène").
     """
     pinned = pinned or set()
     if floor is not None:
@@ -685,6 +749,12 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
     selfie_left = [selfie_max if selfie_max is not None else len(items)]
     meal = np.array([bool(c.meta.get("meal")) for c in items])
     meal_left = [meal_max if meal_max is not None else len(items)]
+    wide = np.array([c.meta.get("shot") == "scène" for c in items])
+    wide_left = [wide_max if wide_max is not None else len(items)]
+    label = [(c.note or "") if scene_cap else "" for c in items]
+    scene_left: dict[str, int] = {}
+    vecs = Vectors(items) if pose_cos else None
+    blocked = np.zeros(len(items), dtype=bool)
 
     def take(best: int) -> None:
         taken[best] = True
@@ -692,6 +762,11 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
         decor_left[0] -= int(decor[best])
         selfie_left[0] -= int(selfie[best])
         meal_left[0] -= int(meal[best])
+        wide_left[0] -= int(wide[best])
+        if scene_cap and label[best] and label[best] not in scene_exempt:
+            scene_left[label[best]] = scene_left.get(label[best], scene_cap) - 1
+        if vecs is not None:
+            blocked[:] |= vecs.near(best, pose_cos)
 
     def pick(rows: list[int]) -> int | None:
         if decor_left[0] <= 0:
@@ -700,6 +775,13 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
             rows = [r for r in rows if not selfie[r]]
         if meal_left[0] <= 0:
             rows = [r for r in rows if not meal[r]]
+        if wide_left[0] <= 0:
+            rows = [r for r in rows if not wide[r]]
+        if scene_cap:
+            rows = [r for r in rows if not label[r] or label[r] in scene_exempt
+                    or scene_left.get(label[r], scene_cap) > 0]
+        if vecs is not None:
+            rows = [r for r in rows if not blocked[r]]
         if not rows:
             return None
         gain = scores[rows] - div.penalty(rows)
@@ -709,6 +791,7 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
         take(r)
 
     bucket = bucket or (lambda c: (c.when.year, c.when.month))
+    cap_of = event_cap or moment_cap
     groups: dict = {}
     for c in items:
         groups.setdefault(bucket(c), []).append(c)
@@ -718,7 +801,8 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
         if not quota:
             continue
         ms = moments(groups[key])
-        left = {i: min(len(m), moment_cap(len(m))) for i, m in enumerate(ms)}
+        sizes = [sum((size_of or {}).get(c.file_id, 1) for c in m) for m in ms]
+        left = {i: min(len(m), cap_of(sizes[i])) for i, m in enumerate(ms)}
         if sum(left.values()) < quota:  # pas assez de moments : on relâche le plafond
             left = {i: len(m) for i, m in enumerate(ms)}
         moment_of = {index[id(c)]: i for i, m in enumerate(ms) for c in m}

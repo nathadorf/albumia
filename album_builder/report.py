@@ -26,11 +26,14 @@ def _item(c) -> dict:
                 "note": c.note,
                 "starred": bool(c.meta.get("starred")),
                 "shot": c.meta.get("shot", ""),
+                "moment": c.meta.get("moment"),
+                "face": round(c.meta.get("family_area", 0.0), 4),   # plus grand visage de la famille (part de l'image)
             }
 
 
 def write_plan(
-    out_dir: Path, name: str, args_summary: dict, selected, thumbs_dir: Path, stats: dict, reserve=()
+    out_dir: Path, name: str, args_summary: dict, selected, thumbs_dir: Path, stats: dict, reserve=(),
+    layout: dict | None = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "thumbs").mkdir(exist_ok=True)
@@ -38,15 +41,19 @@ def write_plan(
         src = thumbs_dir / f"{c.file_id}.jpg"
         if src.exists():
             shutil.copyfile(src, out_dir / "thumbs" / f"{c.file_id}.jpg")
-    items = [_item(c) for c in selected]
+    layout = layout or {}
+    where = layout.get("of", {})
+    items = [{**_item(c), **where.get(c.file_id, {})} for c in selected]
     plan = {
         "album_name": name,
         "created": datetime.now().isoformat(timespec="seconds"),
         "settings": args_summary,
         "stats": stats,
         "photos": items,
-        "reserve": [_item(c) for c in reserve],  # remplaçantes proposées à la relecture
+        "reserve": [{**_item(c), **where.get(c.file_id, {})} for c in reserve],  # remplaçantes proposées à la relecture
     }
+    if layout.get("chapters"):
+        plan["chapters"], plan["cover"] = layout["chapters"], layout.get("cover")
     (out_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     _write_html(out_dir, plan)
     return out_dir / "plan.json"

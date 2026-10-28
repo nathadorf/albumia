@@ -649,7 +649,8 @@ async function openReview(slug) {
   $("#r-name").value = plan.album_name;
   const s = plan.stats || {};
   const wanted = plan.settings && plan.settings.count;
-  let stats = `${plan.photos.length} photos choisies parmi ${nf.format(s.analyzed ?? s.listed ?? 0)} regardées.`;
+  let stats = `${plan.photos.length} photos choisies parmi ${nf.format(s.analyzed ?? s.listed ?? 0)} regardées`
+    + (plan.chapters && plan.chapters.length > 1 ? `, en ${plan.chapters.length} chapitres.` : ".");
   if (wanted && plan.photos.length < wanted) stats += ` Je n'en ai trouvé que ${plan.photos.length} qui correspondent à ta demande.`;
   if (s.no_thumbnail) stats += ` ${s.no_thumbnail} photo(s) sans aperçu Drive ont été ignorées.`;
   $("#r-stats").textContent = stats;
@@ -660,22 +661,35 @@ async function openReview(slug) {
 const thumb = (p) => `/plans/${encodeURIComponent(state.slug)}/thumbs/${p.id}.jpg`;
 const monthKey = (iso) => iso.slice(0, 7);
 
-function renderReview(freshId) {
+// les photos rangées par chapitre (un séjour) ou, pour un album plus ancien, par mois
+function reviewGroups() {
+  const sorted = [...state.photos].sort((a, b) => a.date.localeCompare(b.date));
+  const chapters = (state.plan && state.plan.chapters) || [];
+  const byChapter = chapters.length > 1 && sorted.every((p) => Number.isInteger(p.chapter) && chapters[p.chapter]);
   const groups = new Map();
-  for (const p of [...state.photos].sort((a, b) => a.date.localeCompare(b.date))) {
-    const k = monthKey(p.date);
+  for (const p of sorted) {
+    const k = byChapter ? p.chapter : monthKey(p.date);
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(p);
   }
+  return [...groups].map(([k, items]) => {
+    if (byChapter) return [el("div", { class: "chapter" }, chapters[k].title), items];
+    const [y, m] = k.split("-").map(Number);
+    return [el("div", { class: "month" }, `${MONTHS[m - 1]} ${y}`), items];
+  });
+}
+
+function renderReview(freshId) {
   const grid = $("#r-grid");
   grid.replaceChildren();
-  for (const [k, items] of groups) {
-    const [y, m] = k.split("-").map(Number);
-    grid.append(el("div", { class: "month" }, `${MONTHS[m - 1]} ${y}`));
+  const cover = state.plan && state.plan.cover;
+  for (const [heading, items] of reviewGroups()) {
+    grid.append(heading);
     grid.append(el("div", { class: "grid" }, ...items.map((p) => el("div", {
       class: "tile" + (p.id === freshId ? " fresh" : ""), onclick: () => openLightbox(p),
     },
       el("img", { src: thumb(p), alt: p.name, loading: "lazy" }),
+      p.id === cover ? el("span", { class: "cover", title: "La photo de couverture de l'album" }, "Couverture") : null,
       p.starred ? el("span", { class: "star", title: "Étoilée dans Drive" }, "★") : null,
       tileCaption(p),
       el("button", { type: "button", class: "x", title: "Retirer cette photo", onclick: (e) => { e.stopPropagation(); askReason(p, e.currentTarget); } }, "✕"),
@@ -716,12 +730,16 @@ function askReason(p, anchor) {
     ...REASONS.map(([code, label]) => el("button", { type: "button", class: "pop-item", onclick: () => { closePopover(); removePhoto(p, code); } }, label)));
 }
 
-// autres photos du même moment (même jour, sinon même mois), les mieux notées d'abord
-function alternativesFor(p) {
+// autres prises du même moment d'abord, puis du même jour, puis du même mois (les mieux notées d'abord) ;
+// `otherMoment` : pour remplacer une photo retirée, une photo d'un autre moment (pas sa jumelle)
+function alternativesFor(p, { otherMoment = false } = {}) {
+  const sameMoment = (x) => p.moment != null && x.moment === p.moment;
+  const pool = otherMoment ? state.reserve.filter((x) => !sameMoment(x)) : state.reserve;
+  const takes = otherMoment ? [] : pool.filter(sameMoment);
   const day = p.date.slice(0, 10);
-  const same = state.reserve.filter((x) => x.date.slice(0, 10) === day);
-  const month = state.reserve.filter((x) => monthKey(x.date) === monthKey(p.date) && !same.includes(x));
-  return [...same, ...month].slice(0, 3);
+  const same = pool.filter((x) => x.date.slice(0, 10) === day && !takes.includes(x));
+  const month = pool.filter((x) => monthKey(x.date) === monthKey(p.date) && !takes.includes(x) && !same.includes(x));
+  return [...takes, ...same, ...month].slice(0, 3);
 }
 function showAlternatives(p, anchor) {
   const alts = alternativesFor(p);
@@ -764,8 +782,9 @@ function saveReview() {
 }
 
 function removePhoto(p, reason) {
-  // remplaçante : la meilleure du même moment, sinon du même mois, sinon la meilleure tout court
-  const replacement = alternativesFor(p)[0] || state.reserve[0] || null;
+  // remplaçante : la meilleure du même jour (mais d'un autre moment), sinon du même mois, sinon la meilleure
+  const elsewhere = state.reserve.find((x) => !(p.moment != null && x.moment === p.moment));
+  const replacement = alternativesFor(p, { otherMoment: true })[0] || elsewhere || state.reserve[0] || null;
   replacePhoto(p, replacement, reason);
 }
 

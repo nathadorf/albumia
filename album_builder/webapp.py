@@ -636,7 +636,8 @@ def list_albums():
             plan = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        first = plan["photos"][0]["id"] if plan.get("photos") else None
+        ids = {p["id"] for p in plan.get("photos", [])}
+        first = plan["cover"] if plan.get("cover") in ids else (plan["photos"][0]["id"] if plan.get("photos") else None)
         albums.append({
             "slug": path.parent.name, "name": plan["album_name"], "count": len(plan.get("photos", [])),
             "created": plan.get("created"), "drive_url": plan.get("drive_url"),

@@ -22,8 +22,9 @@ def _unit(i, d=len(scenes.SCENES)):
 class SceneTests(unittest.TestCase):
     def setUp(self):
         index = {prompt: i for i, (_, prompt, _) in enumerate(scenes.SCENES)}
-        patcher = unittest.mock.patch.object(scenes.aesthetic, "theme_vector",
-                                             side_effect=lambda _d, prompt, _n=None, large=False: _unit(index[prompt]))
+        patcher = unittest.mock.patch.object(
+            scenes.aesthetic, "theme_vectors",
+            side_effect=lambda _d, prompts, _n=None, large=False: [_unit(index[x]) for x in prompts])
         patcher.start()
         self.addCleanup(patcher.stop)
         self.at = {label: i for i, (label, _, _) in enumerate(scenes.SCENES)}

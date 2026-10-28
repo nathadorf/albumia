@@ -85,6 +85,8 @@ BANAL_MARGIN_LARGE = 0.02  # œil plus précis : 18 retraits sur 55 repérés, a
 BANAL_MARGIN = 0.025    # « sans intérêt » seulement s'il l'emporte nettement sur toute autre scène
 FAMILY_FACE_AREA = 0.03  # … et si personne de la famille n'est bien visible (visage ≥ 3 % de l'image)
 MEAL_MAX = 2            # la famille garde peu de repas : 2 par album au plus
+# des genres de photos, pas des activités : jamais plafonnés, jamais le titre d'un chapitre
+GENERIC = frozenset({"Portrait", "En famille", "Les enfants ensemble", "Câlin", "Bébé"})
 PRIOR = {SOUVENIR: 0.65, PLACE: 0.6, MEAL: 0.4, BANAL: 0.2}
 PRIOR_WEIGHT = 3        # nombre de photos « imaginaires » derrière l'a priori
 WEIGHT = 0.15           # part de l'intérêt de la description dans la note
@@ -98,7 +100,7 @@ def describe_all(vecs: dict[str, list[float]], model_dir: Path, note=print, larg
     vecs = {k: v for k, v in vecs.items() if v}
     if not vecs:
         return {}
-    texts = [aesthetic.theme_vector(model_dir, prompt, note, large=large) for _, prompt, _ in SCENES]
+    texts = aesthetic.theme_vectors(model_dir, [prompt for _, prompt, _ in SCENES], note, large=large)
     margin = BANAL_MARGIN_LARGE if large else BANAL_MARGIN
     if any(t is None for t in texts):
         return {}

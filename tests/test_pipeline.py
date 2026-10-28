@@ -104,6 +104,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(kinds.count("folder"), 1)
             self.assertEqual(kinds.count("shortcut"), 12)
             self.assertTrue(client.created[1][2].startswith("2026-"))
+            self.assertRegex(client.created[1][2], r"^2026-\d\d-\d\d_10h00_(IMG|BLUR)_\d{4}\.CR2$")  # avec l'heure
 
 
 if __name__ == "__main__":
@@ -178,7 +179,8 @@ class PipelineEditorTests(unittest.TestCase):
         with mock.patch.object(cli, "_client", return_value=client), \
              mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()), \
              mock.patch.object(aesthetic, "load_judge", return_value=FakeJudge()), \
-             mock.patch.object(aesthetic, "theme_vector", return_value=np.array([0.0, 1.0, 0.0])), \
+             mock.patch.object(aesthetic, "theme_vectors",
+                               side_effect=lambda _d, prompts, *a, **k: [np.array([0.0, 1.0, 0.0])] * len(prompts)), \
              mock.patch.object(scoring, "theme_found", return_value=True), \
              mock.patch.object(scoring, "theme_scores", side_effect=scores or fake_scores):
             cli.main(argv)
@@ -211,3 +213,116 @@ class PipelineEditorTests(unittest.TestCase):
                  mock.patch.object(aesthetic, "load_judge", return_value=None):
                 cli.main(argv)
             self.assertTrue(list((tmp / "out").rglob("plan.json")))
+
+
+class FakeLarge:
+    """L'œil plus précis (ViT-L/14) : un vecteur calculé sur l'image, comme FakeJudge."""
+
+    def vector(self, img):
+        v = np.array([img.mean(), img.std(), 1.0])
+        return (v / np.linalg.norm(v)).round(4).tolist()
+
+
+@unittest.skipIf(cv2 is None, "OpenCV non installé")
+class PipelinePhotographerTests(unittest.TestCase):
+    def argv(self, tmp, name="Pro", count=24):
+        return ["--name", name, "--count", str(count), "--folder", "A" * 12, "--year", "2026",
+                "--workdir", str(tmp), "--out", str(tmp / "out")]
+
+    def build(self, tmp, **kw):
+        from album_builder import cli
+
+        client = FakeClient(PipelineTests().make_files())
+        with mock.patch.object(cli, "_client", return_value=client), \
+             mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()):
+            cli.main(self.argv(tmp, **kw))
+        return json.loads(next((tmp / "out").rglob("plan.json")).read_text(encoding="utf-8"))
+
+    def test_plan_has_chapters_cover_and_moments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = self.build(Path(tmp))
+        photos = plan["photos"]
+        self.assertEqual(len(photos), 24)
+        self.assertGreaterEqual(len(plan["chapters"]), 3)
+        self.assertTrue(all({"title", "start", "end"} <= set(c) for c in plan["chapters"]))
+        self.assertIn(plan["cover"], {p["id"] for p in photos})
+        self.assertTrue(all("chapter" in p and "moment" in p for p in photos + plan["reserve"]))
+        sizes = [sum(1 for p in photos if p["chapter"] == k) for k in range(len(plan["chapters"]))]
+        self.assertTrue(all(n >= 3 for n in sizes), sizes)
+        self.assertEqual(plan["stats"]["moments"], plan["stats"]["after_dedupe"])
+
+    def test_second_look_with_the_precise_eye(self):
+        from album_builder import aesthetic, cli
+
+        keys = ("beauty", "emotion", "interaction", "eye_level", "light", "tidy", "face_seen", "moment")
+        crit = {k: (np.array([[1.0, 0.0, 0.0]]), np.array([[0.0, 1.0, 0.0]])) for k in keys}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            client = FakeClient(PipelineTests().make_files())
+            with mock.patch.object(cli, "_client", return_value=client), \
+                 mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()), \
+                 mock.patch.object(aesthetic, "load_judge", return_value=FakeJudge()), \
+                 mock.patch.object(aesthetic, "load_large", return_value=FakeLarge()) as load, \
+                 mock.patch.object(aesthetic, "criteria_large", return_value=crit), \
+                 mock.patch.object(aesthetic, "theme_vectors",
+                                   side_effect=lambda _d, prompts, *a, **k: [np.array([0.0, 1.0, 0.0])] * len(prompts)):
+                cli.main(self.argv(tmp, count=12))
+                editor = json.loads((tmp / ".cache" / "editor.json").read_text(encoding="utf-8"))
+                seen = [v for v in editor.values() if v.get("vec_l")]
+                self.assertGreaterEqual(len(seen), 50)  # toutes sauf les 6 floues, écartées avant
+                self.assertTrue(all(v.get("vl") == aesthetic.LARGE_VERSION for v in seen))
+                cli.main(self.argv(tmp, count=12))  # deuxième fois : rien à regarder de nouveau
+                self.assertEqual(load.call_count, 1)
+            plan = json.loads(next((tmp / "out").rglob("plan.json")).read_text(encoding="utf-8"))
+        self.assertTrue(all("beauty_l" in p["parts"] and "interaction" in p["parts"] for p in plan["photos"]))
+        self.assertEqual(len(plan["photos"]), 12)
+
+
+class ShortlistAndFlagsTests(unittest.TestCase):
+    def test_shortlist_keeps_the_best_of_each_moment_and_every_day(self):
+        from datetime import date
+        from album_builder import pipeline
+        from tests.test_scoring import cand
+
+        cands = []
+        for d in range(10):
+            for k in range(30):  # 10 jours de 30 photos, 20 minutes entre deux : un moment chacune
+                i = d * 100 + k
+                c = cand(i, datetime(2025, 10, 1 + d, 8) + timedelta(minutes=20 * k), 0.95 - 0.002 * (d * 30 + k),
+                         dhash=format((i * 0x9E3779B97F4A7C15) % 2**64, "016x"))
+                c.meta = {}
+                cands.append(c)
+        weak = cands[-1]
+        short = pipeline.pick_shortlist(cands, 5, protected={weak.file_id})
+        ids = {c.file_id for c in short}
+        self.assertLess(len(short), len(cands))
+        self.assertGreaterEqual(len(short), pipeline.SHORTLIST_FLOOR)
+        self.assertIn(weak.file_id, ids)                                  # protégée
+        self.assertTrue({c.when.date() for c in cands} <= {c.when.date() for c in short})  # chaque jour
+        self.assertIn(cands[0].file_id, ids)
+        self.assertEqual(len(pipeline.pick_shortlist(cands[:50], 5)), 50)  # petit dossier : tout passe
+
+    def test_adult_alone_and_tiny_subject(self):
+        from datetime import date
+        from album_builder import pipeline, scenes
+
+        births = {"Eydel": date(2021, 7, 14)}
+        feat = {"w": 1000, "h": 750}
+        big, small = {"box": [0, 0, 200, 200]}, {"box": [300, 300, 50, 50]}
+        alone = lambda faces, labels, b=births: pipeline.is_adult_alone(faces, labels, b, date(2025, 10, 7), feat)
+        self.assertTrue(alone([big], ["Perla"]))                 # papa ou maman seul
+        self.assertFalse(alone([big], ["Eydel"]))                # un enfant seul est le cœur de l'album
+        self.assertFalse(alone([big], [None]))                   # inconnu : on ne sait pas
+        self.assertFalse(alone([big, big], ["Perla", "Eydel"]))
+        self.assertTrue(alone([big, small], ["Perla", None]))    # un visage minuscule ne compte pas
+        self.assertFalse(alone([big], ["Perla"], {}))            # aucune date de naissance : personne n'est « adulte »
+
+        class C:
+            meta, note = {"subject_area": 0.01}, "Jeux dehors"
+
+        self.assertTrue(pipeline.is_tiny(C))
+        C.note = "Le Kotel"
+        self.assertEqual(scenes.KIND[C.note], scenes.PLACE)
+        self.assertFalse(pipeline.is_tiny(C))                    # un lieu qui compte, même loin
+        C.meta, C.note = {"subject_area": 0.0}, "Jeux dehors"
+        self.assertFalse(pipeline.is_tiny(C))                    # sans visage : ce n'est pas un sujet minuscule

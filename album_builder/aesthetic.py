@@ -66,6 +66,44 @@ CRITERIA = {
         ["a family photo", "a photo of a child"],
     ),
 }
+# critères de photographes (culling, photo de famille), jugés par l'œil plus précis seulement :
+# gestes entre les personnes, hauteur de prise de vue, lumière, fond, visage visible, vrai moment
+PRO_CRITERIA = {
+    "interaction": (
+        ["children laughing and playing together",
+         "a parent and a child sharing a tender moment",
+         "family members hugging and looking at each other"],
+        ["people lined up stiffly facing the camera",
+         "a person alone with a blank expression",
+         "people looking in different directions, not interacting"],
+    ),
+    "eye_level": (
+        ["a photo taken at a child's eye level, seen from the front"],
+        ["a photo taken from above looking down at a child",
+         "the top of a child's head seen from above"],
+    ),
+    "light": (
+        ["soft natural light, golden hour, warm and gentle",
+         "gentle light in the shade, even and flattering"],
+        ["harsh midday sun with deep shadows and squinting faces",
+         "a dark underexposed photo",
+         "a flash photo with a harsh glare"],
+    ),
+    "tidy": (
+        ["a clean, simple background behind the subject"],
+        ["a cluttered, busy background full of objects",
+         "a crowd of strangers around a small child"],
+    ),
+    "face_seen": (
+        ["a child facing the camera with the face clearly visible"],
+        ["a child seen from behind", "the back of a person's head"],
+    ),
+    "moment": (
+        ["a memorable, authentic moment of a family trip",
+         "a child doing something exciting"],
+        ["a boring routine moment", "an accidental snapshot of nothing"],
+    ),
+}
 # type de scène : la routine (chaise haute, siège auto…) ne doit pas envahir l'album
 SCENES = {
     "chaise haute": "a baby sitting in a high chair",
@@ -176,34 +214,48 @@ def _text_embedder(ort, Tokenizer, paths):
     return embed
 
 
-def theme_vector(model_dir: Path, prompt: str, note=print, large: bool = False) -> np.ndarray | None:
-    """Description du thème -> vecteur CLIP (gardé dans models/clip_themes.json, ou clipL_themes.json
-    pour l'œil plus précis)."""
+def theme_vectors(model_dir: Path, prompts: list[str], note=print, large: bool = False) -> list[np.ndarray | None]:
+    """Descriptions -> vecteurs CLIP. Celles qui manquent sont calculées en une seule fois puis gardées
+    dans models/clip_themes.json (ou clipL_themes.json pour l'œil plus précis)."""
     cache_path = model_dir / ("clipL_themes.json" if large else "clip_themes.json")
     try:
         saved = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         saved = {}
-    if prompt in saved:
-        return np.asarray(saved[prompt], dtype=float)
-    if os.environ.get("ALBUMIA_NO_EDITOR"):
-        return None
-    try:
-        import onnxruntime as ort
-        from tokenizers import Tokenizer
+    missing = [x for x in dict.fromkeys(prompts) if x not in saved]
+    if missing and not os.environ.get("ALBUMIA_NO_EDITOR"):
+        try:
+            import onnxruntime as ort
+            from tokenizers import Tokenizer
 
-        hf, mirror, files = (LARGE_HF, LARGE_MIRROR, LARGE_FILES) if large else (HF, MIRROR, FILES)
-        paths = {name: vision.ensure_model(model_dir / name, (hf + src, mirror + src))
-                 for name, src in files.items() if "vision" not in name}
-        text = paths.get("clipL_text.onnx") or paths["clip_text.onnx"]
-        vec = _text_embedder(ort, Tokenizer, {**paths, "clip_text.onnx": text})([prompt])[0]
-    except Exception as e:  # pas de modèle : l'album se fait sans le thème
-        note(f"Thème non pris en compte ({e}).")
+            hf, mirror, files = (LARGE_HF, LARGE_MIRROR, LARGE_FILES) if large else (HF, MIRROR, FILES)
+            paths = {name: vision.ensure_model(model_dir / name, (hf + src, mirror + src))
+                     for name, src in files.items() if "vision" not in name}
+            text = paths.get("clipL_text.onnx") or paths["clip_text.onnx"]
+            vecs = _text_embedder(ort, Tokenizer, {**paths, "clip_text.onnx": text})(missing)
+        except Exception as e:  # pas de modèle : l'album se fait sans
+            note(f"Descriptions non prises en compte ({e}).")
+        else:
+            for x, vec in zip(missing, vecs):
+                saved[x] = [round(float(v), 5) for v in vec]
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(saved), encoding="utf-8")
+    return [np.asarray(saved[x], dtype=float) if x in saved else None for x in prompts]
+
+
+def theme_vector(model_dir: Path, prompt: str, note=print, large: bool = False) -> np.ndarray | None:
+    return theme_vectors(model_dir, [prompt], note, large)[0]
+
+
+def criteria_large(model_dir: Path, note=print) -> dict | None:
+    """Les critères (beauté, émotion…) avec les descriptions de l'œil plus précis."""
+    every = {**CRITERIA, **PRO_CRITERIA}
+    prompts = [x for pos, neg in every.values() for x in (*pos, *neg)]
+    vecs = dict(zip(prompts, theme_vectors(model_dir, prompts, note, large=True)))
+    if any(v is None for v in vecs.values()):
         return None
-    saved[prompt] = [round(float(x), 5) for x in vec]
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(saved), encoding="utf-8")
-    return np.asarray(saved[prompt], dtype=float)
+    return {k: (np.vstack([vecs[x] for x in pos]), np.vstack([vecs[x] for x in neg]))
+            for k, (pos, neg) in every.items()}
 
 
 def scene_of(img_vec: np.ndarray, scene_vectors: np.ndarray) -> str:

@@ -1,0 +1,372 @@
+"""Le tri d'un photographe : moments, prises, chapitres, couverture, famille présente."""
+import json
+import tempfile
+import unittest
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import numpy as np
+
+from album_builder import curate, scoring
+from tests.test_scoring import cand
+
+
+def unit(*xs):
+    v = np.array(xs, dtype=float)
+    return list(v / np.linalg.norm(v))
+
+
+def photo(i, when, score=0.5, vec=None, vec_l=None, dhash=None, labels=(), shot="plan moyen", note="", **parts):
+    c = cand(i, when, score, dhash=dhash or format((i * 0x9E3779B97F4A7C15) % 2**64, "016x"))
+    c.labels, c.note, c.parts = set(labels), note, dict(parts)
+    c.meta = {"vec": vec, "vec_l": vec_l, "shot": shot}
+    return c
+
+
+T0 = datetime(2025, 10, 7, 10, 0)
+A, B = unit(1, 0, 0), unit(0, 1, 0)
+
+
+class MomentTests(unittest.TestCase):
+    def test_close_similar_shots_make_one_moment(self):
+        items = [photo(1, T0, vec_l=A), photo(2, T0 + timedelta(minutes=3), vec_l=A),
+                 photo(3, T0 + timedelta(minutes=6), vec_l=A),
+                 photo(4, T0 + timedelta(minutes=4), vec_l=B),          # autre scène au même moment
+                 photo(5, T0 + timedelta(hours=1), vec_l=A)]            # même scène, une heure plus tard
+        groups = curate.find_moments(items)
+        self.assertEqual(sorted(sorted(c.file_id for c in g) for g in groups),
+                         [["id1", "id2", "id3"], ["id4"], ["id5"]])
+        self.assertEqual(items[0].meta["moment"], items[1].meta["moment"])
+        self.assertNotEqual(items[0].meta["moment"], items[3].meta["moment"])
+
+    def test_the_eye_used_is_the_precise_one_when_both_photos_have_it(self):
+        # l'œil habituel les trouve voisines (0,9), l'œil plus précis non (0,6) : le précis décide
+        a = photo(1, T0, vec=unit(1, 0.1, 0), vec_l=unit(1, 0, 0))
+        b = photo(2, T0 + timedelta(minutes=2), vec=unit(1, 0.1, 0), vec_l=unit(0.6, 0.8, 0))
+        self.assertEqual(len(curate.find_moments([a, b])), 2)
+
+    def test_without_vectors_only_look_alikes_taken_one_after_the_other_group(self):
+        base = "0" * 16
+        near = format(0xFF, "016x")                                     # 8 bits d'écart
+        quick = [photo(1, T0, dhash=base), photo(2, T0 + timedelta(seconds=30), dhash=near)]
+        slow = [photo(3, T0, dhash=base), photo(4, T0 + timedelta(minutes=5), dhash=near)]
+        self.assertEqual(len(curate.find_moments(quick)), 1)
+        self.assertEqual(len(curate.find_moments(slow)), 2)
+
+    def test_a_moment_lasts_half_an_hour_at_most(self):
+        items = [photo(i, T0 + timedelta(minutes=5 * i), vec_l=A) for i in range(10)]   # 45 minutes de suite
+        self.assertGreaterEqual(len(curate.find_moments(items)), 2)
+
+
+class TakeTests(unittest.TestCase):
+    def test_natural_take_beats_a_sharper_stiff_one(self):
+        natural = photo(1, T0, 0.5, vec_l=A, frontal=1.0, eyes=1.0, smile=0.9, sharpness=0.5, labels={"Eydel"})
+        stiff = photo(2, T0 + timedelta(minutes=1), 0.5, vec_l=A, frontal=0.2, eyes=0.5, smile=0.2,
+                      sharpness=1.0, labels={"Eydel"})
+        self.assertGreater(curate.take_value(natural), curate.take_value(stiff))
+        picks, others = curate.heroes(curate.find_moments([stiff, natural]))
+        self.assertEqual([c.file_id for c in picks], ["id1"])
+        self.assertEqual([c.file_id for c in others[0]], ["id2"])
+
+    def test_more_of_the_family_wins_a_tie(self):
+        alone = photo(1, T0, 0.5, vec_l=A, labels={"Eydel"})
+        together = photo(2, T0 + timedelta(minutes=1), 0.5, vec_l=A, labels={"Eydel", "Perla"})
+        self.assertEqual(curate.heroes(curate.find_moments([alone, together]))[0][0].file_id, "id2")
+
+    def test_a_strong_moment_gives_a_second_photo_with_someone_else(self):
+        takes = [photo(i, T0 + timedelta(minutes=i), 0.6 - 0.005 * i, vec_l=A, labels={"Eydel"}, frontal=1.0)
+                 for i in range(5)]
+        takes.append(photo(9, T0 + timedelta(minutes=6), 0.58, vec_l=A, labels={"Arié"}, frontal=0.9))
+        picks, _ = curate.heroes(curate.find_moments(takes))
+        self.assertEqual(len(picks), 2)
+        self.assertEqual({tuple(sorted(c.labels)) for c in picks}, {("Eydel",), ("Arié",)})
+        weak = curate.find_moments([photo(i, T0 + timedelta(minutes=i), vec_l=A, labels={"Eydel"}) for i in range(4)])
+        self.assertEqual(len(curate.heroes(weak)[0]), 1)
+
+    def test_five_identical_takes_stay_one_photo(self):
+        takes = [photo(i, T0 + timedelta(minutes=i), 0.6, vec_l=A, labels={"Eydel"}) for i in range(6)]
+        self.assertEqual(len(curate.heroes(curate.find_moments(takes))[0]), 1)
+
+    def test_a_kept_photo_is_always_the_photo_of_its_moment(self):
+        best = photo(1, T0, 0.9, vec_l=A, frontal=1.0, eyes=1.0)
+        kept = photo(2, T0 + timedelta(minutes=1), 0.2, vec_l=A)
+        picks, _ = curate.heroes(curate.find_moments([best, kept]), pinned={"id2"})
+        self.assertEqual([c.file_id for c in picks], ["id2"])
+
+
+class RuleTests(unittest.TestCase):
+    def test_the_same_pose_is_never_taken_twice(self):
+        a = photo(1, T0, 0.9, vec_l=A)
+        again = photo(2, T0 + timedelta(hours=3), 0.85, vec_l=unit(1, 0.2, 0))   # cos 0,98 : même pose
+        other = photo(3, T0 + timedelta(hours=6), 0.5, vec_l=B)
+        both = {c.file_id for c in scoring.select_spread([a, again, other], 2)}
+        self.assertEqual(both, {"id1", "id2"})
+        kept = {c.file_id for c in scoring.select_spread([a, again, other], 2, pose_cos=curate.POSE_COS)}
+        self.assertEqual(kept, {"id1", "id3"})
+
+    def test_an_activity_is_capped(self):
+        pool = [photo(i, T0 + timedelta(hours=3 * i), 0.9 - 0.01 * i, note="Piscine") for i in range(6)]
+        pool += [photo(10 + i, T0 + timedelta(hours=40 + 3 * i), 0.5, note="Portrait") for i in range(4)]
+        pool += [photo(20 + i, T0 + timedelta(hours=80 + 3 * i), 0.4, note="Plage") for i in range(4)]
+        chosen = scoring.select_spread(pool, 8, scene_cap=2, scene_exempt={"Portrait"})
+        self.assertEqual(sum(1 for c in chosen if c.note == "Piscine"), 2)
+        self.assertEqual(sum(1 for c in chosen if c.note == "Portrait"), 4)    # un genre, pas une activité
+        self.assertEqual(len(chosen), 8)
+
+    def test_wide_shots_are_capped(self):
+        pool = [photo(i, T0 + timedelta(hours=3 * i), 0.9 - 0.01 * i, shot="scène") for i in range(6)]
+        pool += [photo(10 + i, T0 + timedelta(hours=40 + 3 * i), 0.5, shot="plan moyen") for i in range(6)]
+        chosen = scoring.select_spread(pool, 8, wide_max=curate.wide_cap(8))
+        self.assertEqual(sum(1 for c in chosen if c.meta["shot"] == "scène"), 2)
+        self.assertEqual(len(chosen), 8)
+
+    def test_a_big_outing_made_of_many_takes_deserves_more_than_one_photo(self):
+        basis = lambda i: unit(*[1.0 if j == i else 0.0 for j in range(8)])
+        outing = [photo(i, T0 + timedelta(minutes=40 * i), 0.9 - 0.01 * i, vec_l=basis(i)) for i in range(4)]
+        later = [photo(10 + i, T0 + timedelta(days=3 + 2 * i), 0.5, vec_l=basis(4 + i)) for i in range(2)]
+        small = scoring.select_spread(outing + later, 3, event_cap=curate.event_cap)
+        big = scoring.select_spread(outing + later, 3, event_cap=curate.event_cap,
+                                    size_of={c.file_id: 12 for c in outing})
+        from_outing = lambda sel: sum(1 for c in sel if c.file_id in {o.file_id for o in outing})
+        self.assertEqual(from_outing(small), 1)    # 4 photos prises en 2 h : un seul souvenir
+        self.assertEqual(from_outing(big), 3)      # 48 prises : jusqu'à 3 (4 au plus)
+
+    def test_penalties(self):
+        c = photo(1, T0, 0.8)
+        c.meta.update(tiny=True, adult_only=True)
+        curate.penalize(c)
+        self.assertAlmostEqual(c.score, 0.8 - curate.TINY_PENALTY - curate.ADULT_ALONE_PENALTY)
+        ok = photo(2, T0, 0.8)
+        curate.penalize(ok)
+        self.assertEqual(ok.score, 0.8)
+
+    def test_caps_scale_with_the_album(self):
+        self.assertEqual(curate.scene_cap(31), 2)
+        self.assertEqual(curate.scene_cap(100), 8)
+        self.assertEqual(curate.wide_cap(31), 8)
+
+
+class ChapterTests(unittest.TestCase):
+    def days(self, n_days=3, per_day=8):
+        out = []
+        for d in range(n_days):
+            for k in range(per_day):
+                out.append(photo(d * 100 + k, T0 + timedelta(days=d, minutes=25 * k), vec_l=A, note="Piscine"))
+        return out
+
+    def test_cuts_at_the_big_gaps(self):
+        chapters = curate.cut_chapters(self.days(), target=3)
+        self.assertEqual([len(c) for c in chapters], [8, 8, 8])
+        self.assertEqual([c[0].when.day for c in chapters], [7, 8, 9])
+
+    def test_number_of_chapters_follows_the_size_of_the_album(self):
+        items = []
+        for i in range(31):  # 31 photos sur 12 jours
+            items.append(photo(i, T0 + timedelta(days=i * 12 // 31, hours=i % 3 * 2), vec_l=A))
+        chapters = curate.cut_chapters(items)
+        self.assertEqual(len(chapters), 6)
+        self.assertTrue(all(3 <= len(c) <= 8 for c in chapters), [len(c) for c in chapters])
+        self.assertEqual(sorted((c for ch in chapters for c in ch), key=lambda c: c.when),
+                         sorted(items, key=lambda c: c.when))
+
+    def test_a_scene_change_cuts_when_times_are_even(self):
+        items = [photo(i, T0 + timedelta(minutes=30 * i), vec_l=A if i < 6 else B) for i in range(12)]
+        chapters = curate.cut_chapters(items, target=2)
+        self.assertEqual([len(c) for c in chapters], [6, 6])
+
+    def test_small_albums_have_one_chapter(self):
+        self.assertEqual(len(curate.cut_chapters(self.days(1, 7))), 1)
+        self.assertEqual(curate.cut_chapters([]), [])
+
+    def test_titles(self):
+        d = lambda *a: datetime(*a)
+        self.assertEqual(curate.date_label(d(2025, 10, 7, 9), d(2025, 10, 7, 18)), "Mardi 7 octobre")
+        self.assertEqual(curate.date_label(d(2025, 10, 1, 9), d(2025, 10, 3, 18)), "Du 1er au 3 octobre")
+        self.assertEqual(curate.date_label(d(2025, 9, 28), d(2025, 10, 2)), "Du 28 septembre au 2 octobre")
+        self.assertEqual(curate.date_label(d(2025, 3, 2), d(2025, 5, 20)), "Mars à mai 2025")
+        self.assertEqual(curate.date_label(d(2024, 11, 2), d(2025, 2, 20)), "Novembre 2024 – février 2025")
+        group = [photo(i, T0 + timedelta(minutes=i), note=n) for i, n in enumerate(["Piscine", "Piscine", "Portrait"])]
+        self.assertEqual(curate.chapter_title(group), "Mardi 7 octobre · Piscine")
+        lone = [photo(1, T0, note="Piscine"), photo(2, T0, note="Plage")]
+        self.assertEqual(curate.chapter_title(lone), "Mardi 7 octobre")
+
+
+class CoverAndFamilyTests(unittest.TestCase):
+    def test_the_cover_is_a_group_facing_the_camera(self):
+        solo = photo(1, T0, 0.8, labels={"Eydel"}, frontal=1.0, smile=1.0, beauty=0.9, sharpness=0.9)
+        group = photo(2, T0 + timedelta(hours=1), 0.7, labels={"Eydel", "Arié", "Hillel"}, frontal=0.9,
+                      smile=0.8, beauty=0.8, sharpness=0.8)
+        self.assertEqual(curate.pick_cover([solo, group], ["Eydel", "Arié", "Hillel"]), "id2")
+        self.assertIsNone(curate.pick_cover([]))
+
+    def pool(self):
+        t = T0
+        out = []
+        who = [{"Eydel", "Arié"}, {"Eydel"}, {"Arié"}, {"Eydel", "Arié", "Hillel", "Perla"}, {"Hillel"},
+               {"Hillel"}, {"Perla"}, {"Eydel", "Perla"}, {"Arié", "Hillel"}, {"Eydel"}, {"Arié"}, {"Hillel"}]
+        for i, w in enumerate(who):
+            c = photo(i, t + timedelta(hours=3 * i), 0.9 - 0.02 * i,
+                      vec_l=unit(*[1.0 if j == i else 0.0 for j in range(16)]), labels=w)
+            c.meta["moment"] = i
+            out.append(c)
+        out.append(photo(50, t + timedelta(hours=60), 0.1, vec_l=unit(*[1.0 if j == 14 else 0.0 for j in range(16)]),
+                         labels={"Nathanaël"}))  # médiocre
+        out[-1].meta["moment"] = 50
+        return out
+
+    def test_everyone_is_present_and_a_group_photo_comes_first(self):
+        family = ["Eydel", "Arié", "Hillel", "Perla"]
+        pool = self.pool()
+        seeds = curate.coverage_seeds(pool, family, babies=["Hillel"], limit=8)
+        chosen = [c for c in pool if c.file_id in seeds]
+        self.assertIn("id3", seeds)                                    # la photo de groupe (4 de la famille)
+        for person, need in (("Eydel", 2), ("Arié", 2), ("Hillel", 3), ("Perla", 2)):
+            self.assertGreaterEqual(sum(person in c.labels for c in chosen), need, person)
+        self.assertNotIn("id50", seeds)                                # une photo médiocre n'est jamais imposée
+        self.assertLessEqual(len(seeds), 8)
+
+    def test_seeds_respect_moments_poses_selfies_and_limit(self):
+        pool = self.pool()
+        pool[1].meta["moment"] = pool[0].meta["moment"] = 0            # même moment que la photo 0
+        pool[2].meta["selfie"] = True
+        seeds = curate.coverage_seeds(pool, ["Eydel", "Arié"], limit=8)
+        self.assertFalse({"id0", "id1"} <= seeds)
+        self.assertNotIn("id2", seeds)
+        self.assertLessEqual(len(curate.coverage_seeds(pool, ["Eydel", "Arié", "Hillel", "Perla"], limit=2)), 2)
+        self.assertEqual(curate.coverage_seeds(pool, []), set())
+
+
+class ReserveAndLayoutTests(unittest.TestCase):
+    def setUp(self):
+        self.a = photo(1, T0, 0.9, vec_l=A)
+        self.a2 = photo(2, T0 + timedelta(minutes=2), 0.8, vec_l=A)
+        self.a3 = photo(3, T0 + timedelta(minutes=3), 0.7, vec_l=A)
+        self.b = photo(4, T0 + timedelta(days=2), 0.85, vec_l=B)
+        self.c = photo(5, T0 + timedelta(days=2, hours=2), 0.6, vec_l=unit(0, 0, 1))
+        self.pool_all = [self.a, self.a2, self.a3, self.b, self.c]
+        self.groups = curate.find_moments(self.pool_all)
+        self.pool, self.others = curate.heroes(self.groups)
+
+    def test_reserve_starts_with_other_takes_of_the_chosen_moments(self):
+        selected = [c for c in self.pool if c.file_id in ("id1", "id4")]
+        reserve = curate.build_reserve(selected, self.others, self.pool, limit=5)
+        self.assertEqual([c.file_id for c in reserve], ["id2", "id3", "id5"])
+
+    def test_layout_gives_chapters_cover_and_places_the_reserve(self):
+        selected = [photo(i, T0 + timedelta(days=i // 8, minutes=20 * i), vec_l=A) for i in range(24)]
+        spare = photo(99, T0 + timedelta(days=2, hours=5), vec_l=A)
+        out = curate.layout(selected, [spare], ["Eydel"])
+        self.assertEqual(len(out["chapters"]), 4)
+        self.assertIn(out["cover"], {c.file_id for c in selected})
+        self.assertEqual(out["of"]["id0"]["chapter"], 0)
+        last = len(out["chapters"]) - 1
+        self.assertEqual(out["of"]["id99"]["chapter"], last)        # prise le dernier jour : dernier chapitre
+        self.assertEqual({k for k in out["chapters"][0]}, {"title", "start", "end"})
+
+
+class CompareTests(unittest.TestCase):
+    def test_compare_counts_same_photos_and_same_moments(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            (work / ".cache").mkdir()
+            vec = unit(1, 0, 0)
+            (work / ".cache" / "editor.json").write_text(json.dumps({f"p{i}": {"vec": vec} for i in range(6)}))
+            (work / ".cache" / "features.json").write_text(json.dumps(
+                {f"p{i}": {"feat": {"dhash": format(i * 0x0F0F, "016x"), "w": 10, "h": 10, "faces": []}} for i in range(6)}))
+            item = lambda i, minutes: {"id": f"p{i}", "name": f"IMG_{i}", "date": (T0 + timedelta(minutes=minutes)).isoformat(),
+                                       "score": 0.5, "parts": {}, "people": [], "note": "", "shot": ""}
+            auto = {"photos": [item(0, 0), item(1, 120), item(2, 300)], "reserve": [item(3, 2)]}
+            ref = {"photos": [item(0, 0), item(3, 2), item(4, 600), item(5, 0)],
+                   "review": {"ids": ["p0", "p3", "p4"], "removed": []}}
+            (work / "auto.json").write_text(json.dumps(auto))
+            (work / "ref.json").write_text(json.dumps(ref))
+            lines = []
+            out = curate.compare(work / "auto.json", work / "ref.json", work, out=lines.append)
+        self.assertEqual(out["exact"], ["p0"])
+        self.assertEqual(out["same_moment"], ["p3"])      # p3 est une autre prise du moment de p0
+        self.assertEqual(out["missing"], ["p4"])
+        self.assertEqual(sorted(out["extra"]), ["p1", "p2"])
+        self.assertIn("Sélection à la main : 3 photos", lines[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TakesReportTests(unittest.TestCase):
+    def test_pairs_of_kept_and_duplicate_takes(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            (work / ".cache").mkdir()
+            (work / ".cache" / "editor.json").write_text(json.dumps({f"p{i}": {"vec": unit(1, 0, 0)} for i in range(8)}))
+            (work / ".cache" / "features.json").write_text("{}")
+            item = lambda i, minutes, **parts: {"id": f"p{i}", "name": f"IMG_{i}", "date": (T0 + timedelta(minutes=minutes)).isoformat(),
+                                                "score": 0.5, "parts": parts, "people": [], "note": "", "shot": ""}
+            # deux moments : la prise gardée a les yeux ouverts et regarde l'appareil, la retirée est plus nette
+            photos = [item(0, 0, frontal=1.0, eyes=1.0, sharpness=0.5), item(1, 2, frontal=0.1, eyes=0.2, sharpness=0.9),
+                      item(2, 120, frontal=0.9, eyes=0.9, sharpness=0.4), item(3, 122, frontal=0.2, eyes=0.1, sharpness=0.8),
+                      item(4, 124, frontal=0.3, eyes=0.5, sharpness=0.7)]
+            plan = {"photos": photos, "reserve": [],
+                    "review": {"ids": ["p0", "p2"], "removed": [{"id": "p1", "reason": "doublon"},
+                                                                  {"id": "p3", "reason": "doublon"},
+                                                                  {"id": "p4", "reason": "pas-belle"}]}}
+            (work / "plan.json").write_text(json.dumps(plan))
+            lines = []
+            out = curate.takes_report([work / "plan.json"], work, out=lines.append)
+        self.assertEqual(out["pairs"], 2)                     # p4 n'est pas un doublon : pas de paire
+        self.assertEqual(out["accuracy"]["frontal"], 1.0)
+        self.assertEqual(out["accuracy"]["sharpness"], 0.0)   # la prise gardée est la moins nette
+        self.assertGreater(out["weights"]["frontal"], 0)
+        self.assertGreater(out["accuracy"]["take_value"], 0.5)
+
+
+class OpenerTests(unittest.TestCase):
+    def setUp(self):
+        self.basis = lambda i: unit(*[1.0 if j == i else 0.0 for j in range(128)])
+
+    def album(self):
+        out = []
+        for d in range(3):                        # 3 jours de 8 photos
+            for k in range(8):
+                c = photo(d * 10 + k, T0 + timedelta(days=d, minutes=30 * k), 0.7 - 0.01 * k, vec_l=self.basis(d * 10 + k),
+                          shot="plan moyen")
+                c.meta["moment"] = d * 10 + k
+                out.append(c)
+        return out
+
+    def wide(self, i, when, score=0.65, note=""):
+        c = photo(i, when, score, vec_l=self.basis(i), shot="scène", note=note)
+        c.meta["moment"] = i
+        return c
+
+    def test_a_chapter_without_a_place_shot_gets_one(self):
+        selected = self.album()
+        opener = self.wide(100, T0 + timedelta(days=1, hours=-1), note="Le Kotel")
+        out = curate.add_openers(selected, selected + [opener], 24)
+        self.assertEqual(len(out), 24)                       # jamais plus que demandé
+        self.assertIn("id100", {c.file_id for c in out})
+        second_day = [c for c in curate.cut_chapters(out) if c[0].when.day == 8][0]
+        self.assertTrue(any(c.file_id == "id100" for c in second_day))
+
+    def test_without_room_the_weakest_photo_of_a_full_chapter_gives_way(self):
+        selected = self.album()
+        weakest = min((c for c in selected if c.when.day == 8), key=lambda c: c.score)
+        opener = self.wide(100, T0 + timedelta(days=1, hours=-1))
+        out = curate.add_openers(selected, selected + [opener], 24, protected={weakest.file_id})
+        self.assertIn(weakest.file_id, {c.file_id for c in out})   # photo protégée : jamais retirée
+        self.assertIn("id100", {c.file_id for c in out})
+        self.assertEqual(len(out), 24)
+
+    def test_no_opener_when_the_chapter_already_has_one_or_nothing_fits(self):
+        selected = self.album()
+        selected[0].meta["shot"] = "scène"
+        far = self.wide(100, T0 + timedelta(days=1, hours=-8))                 # trop tôt
+        weak = self.wide(101, T0 + timedelta(days=1, hours=-1), score=0.1)     # trop faible
+        twin = photo(102, T0 + timedelta(days=1, hours=-1), 0.7, vec_l=selected[9].meta["vec_l"], shot="scène")
+        twin.meta["moment"] = 102                                              # même pose qu'une photo choisie
+        out = curate.add_openers(selected, selected + [far, weak, twin], 30)
+        self.assertEqual({c.file_id for c in out}, {c.file_id for c in selected})
+
+    def test_small_albums_are_left_alone(self):
+        few = self.album()[:6]
+        self.assertEqual(curate.add_openers(few, few + [self.wide(100, T0)], 6), sorted(few, key=lambda c: c.when))
