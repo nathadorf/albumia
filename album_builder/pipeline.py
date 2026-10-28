@@ -112,7 +112,7 @@ def is_selfie(faces, per_face, births, when, feat) -> bool:
 # ce qui n'est pas un souvenir de famille, même avec un visage dessus (affiche, écran, publicité)
 OBJECT_PROMPTS = [
     "an advertisement poster on a wall", "a photo of a phone screen or a computer screen",
-    "a banner or a sign with text", "a supermarket shelf with products", "a plate of food on a table",
+    "a banner or a sign with text", "a supermarket shelf with products",
     "an empty room or a corridor", "a city street with buildings and a tram", "a fridge door with magnets",
     "a restaurant menu", "a projection screen in a hall",
 ]
@@ -450,7 +450,7 @@ def build_plan(
             rejected["pas une photo"] += 1
         elif (c.meta["editor"] or {}).get("not_album", 0) > aesthetic.NOT_ALBUM_REJECT:
             rejected["pas pour un album"] += 1
-        elif f.id in objects and not labels & set(wanted):
+        elif f.id in objects and not labels & set(wanted) and not themed.get(f.id, (0, False))[1]:
             rejected["objet ou décor"] += 1
         elif scoring.too_small_to_print(f.width, f.height, kind):
             rejected["trop petite pour l'impression"] += 1
@@ -524,7 +524,8 @@ def build_plan(
     if len(selected) < params.count and params.theme_strict and themed:
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:
-        rep.note(f"{len(selected)} photos seulement : les autres étaient trop faibles pour un album.")
+        rep.note(f"{len(selected)} photos seulement : les autres sont des doublons, des selfies ou des "
+                 "photos sans personne. Tu peux en reprendre dans la réserve.")
     chosen = {c.file_id for c in selected}
     reserve = sorted((c for c in pool if c.file_id not in chosen), key=lambda c: c.score, reverse=True)
     reserve = reserve[: params.reserve]
