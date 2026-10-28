@@ -80,12 +80,36 @@ def find_person_dir(refs_dir: Path, name: str) -> Path:
     return refs_dir / name
 
 
-def save_face(refs_dir: Path, name: str, jpeg_bytes: bytes) -> Path:
+def save_face(refs_dir: Path, name: str, jpeg_bytes: bytes, taken: date | None = None) -> Path:
     folder = find_person_dir(refs_dir, name)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{uuid.uuid4().hex[:10]}.jpg"
     path.write_bytes(jpeg_bytes)
+    if taken:
+        set_photo_dates(refs_dir, {folder.name: {path.name: taken}})
     return path
+
+
+def photo_dates(refs_dir: Path) -> dict[str, dict[str, date]]:
+    """{personne: {photo de référence: date de prise de vue}} quand elle est connue."""
+    out: dict[str, dict[str, date]] = {}
+    if not refs_dir.exists():
+        return out
+    for d in refs_dir.iterdir():
+        if d.is_dir():
+            known = _info(d).get("taken", {})
+            out[d.name] = {k: date.fromisoformat(v) for k, v in known.items() if (d / k).exists()}
+    return out
+
+
+def set_photo_dates(refs_dir: Path, dates: dict[str, dict[str, date]]) -> None:
+    for name, photos in dates.items():
+        folder = find_person_dir(refs_dir, name)
+        if not folder.exists() or not photos:
+            continue
+        info = _info(folder)
+        info.setdefault("taken", {}).update({k: v.isoformat() for k, v in photos.items()})
+        (folder / "person.json").write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
 
 
 def remove_photo(refs_dir: Path, name: str, photo: str) -> None:

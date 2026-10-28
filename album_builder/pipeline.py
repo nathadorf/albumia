@@ -10,7 +10,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from . import people, scoring, vision
@@ -18,6 +18,37 @@ from .errors import AlbumError, Cancelled
 from .report import slugify, write_plan
 
 STEPS = 5
+
+
+def date_references(ref_photos: dict, known: dict, cache: dict, min_sim: float = 0.85) -> dict:
+    """Retrouve la date des photos de référence découpées dans des photos déjà analysées.
+
+    Le visage d'une référence nommée depuis « Qui est sur tes photos ? » est presque identique à
+    un visage du cache : on lui donne la date de cette photo.
+    """
+    import numpy as np
+
+    todo = [(n, photo, e) for n, v in ref_photos.items() for photo, e in v if photo not in known.get(n, {})]
+    if not todo:
+        return {}
+    embs, whens = [], []
+    for entry in cache.values():
+        if not entry.get("when"):
+            continue
+        for face in entry["feat"].get("faces", []):
+            if "emb" in face:
+                embs.append(face["emb"])
+                whens.append(entry["when"])
+    if not embs:
+        return {}
+    mat = np.asarray(embs, dtype=float)
+    out: dict = {}
+    for name, photo, e in todo:
+        sims = mat @ np.asarray(e, dtype=float)
+        i = int(np.argmax(sims))
+        if sims[i] >= min_sim:
+            out.setdefault(name, {})[photo] = date.fromisoformat(whens[i])
+    return out
 
 
 def parse_folder_id(value: str) -> str:
@@ -123,9 +154,11 @@ def build_plan(
 
     wanted = list(dict.fromkeys(params.must + params.bonus))
     refs: dict[str, list[float]] = {}
+    ref_photos: dict[str, list[tuple[str, list[float]]]] = {}
     if wanted:
         rep.step(2, "Apprentissage des visages…")
-        refs = vision.build_references(vision.get_engine(model_dir), refs_dir)
+        ref_photos = vision.reference_embeddings(vision.get_engine(model_dir), refs_dir)
+        refs = {n: vision.mean_embedding([e for _, e in v]) for n, v in ref_photos.items()}
         missing = [w for w in wanted if w not in refs]
         if missing:
             raise AlbumError(
@@ -190,7 +223,19 @@ def build_plan(
         rep.note(f"{failed} photo(s) sans aperçu Drive, ignorées.")
 
     rep.step(4, "Choix des meilleures photos…")
+    for f in files:
+        if f.id in cache:
+            cache[f.id]["when"] = f.when.date().isoformat()
+    dates = people.photo_dates(refs_dir)
+    found = date_references(ref_photos, dates, cache)
+    if found:
+        people.set_photo_dates(refs_dir, found)
+        for name, photos in found.items():
+            dates.setdefault(name, {}).update(photos)
+        _save_cache(features_path, cache)
     births = people.births(refs_dir)
+    ref_sets = {n: [(e, dates.get(n, {}).get(photo)) for photo, e in v] for n, v in ref_photos.items()}
+    refs_by_month: dict = {}
     cands: list[scoring.Candidate] = []
     rejected = {"sans analyse": 0, "pas une photo": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0}
@@ -203,7 +248,10 @@ def build_plan(
         faces = scoring.real_faces(feat)
         # personne ne peut apparaître sur une photo prise avant sa naissance
         allowed = {n for n in refs if n not in births or births[n] <= f.when.date()}
-        per_face = scoring.face_labels(faces, refs, params.match_threshold, allowed=allowed)
+        month = (f.when.year, f.when.month)
+        if month not in refs_by_month:
+            refs_by_month[month] = scoring.refs_at(ref_sets, births, f.when.date().replace(day=15))
+        per_face = scoring.face_labels(faces, refs_by_month[month], params.match_threshold, allowed=allowed)
         labels = {label for label in per_face if label}
         kind = scoring.photo_kind(f.name, f.camera, f.width, f.height)
         c = scoring.Candidate(f.id, f.name, f.when, feat, labels)

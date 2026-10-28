@@ -11,7 +11,7 @@ import os
 import threading
 import uuid
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, request, send_from_directory
@@ -334,7 +334,7 @@ def face_groups():
         labels = scoring.face_labels(real, known, scoring.DEFAULT_MATCH_THRESHOLD)
         for face, label in zip(real, labels):
             if "emb" in face and not label:
-                faces.append({"file": fid, "box": face["box"], "w": feat["w"],
+                faces.append({"file": fid, "box": face["box"], "w": feat["w"], "when": entry.get("when"),
                               "size": face["box"][2] * face["box"][3], "emb": np.array(face["emb"])})
     faces.sort(key=lambda f: f["size"], reverse=True)
     clusters: list[dict] = []
@@ -379,7 +379,8 @@ def name_face_group(gid):
             continue
         ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
         if ok:
-            people.save_face(REFS, name, buf.tobytes())
+            taken = date.fromisoformat(item["when"]) if item.get("when") else None
+            people.save_face(REFS, name, buf.tobytes(), taken)
             saved += 1
     return jsonify({"saved": saved, "people": _people_payload()})
 

@@ -155,3 +155,69 @@ class EditorTests(unittest.TestCase):
         selfie, _ = scoring.local_score(feat(faces=[child, dad]), {"Eydel"}, [],
                                         labels_per_face=["Eydel", None], targets=["Eydel"])
         self.assertLess(selfie, alone)
+
+
+class NetworkTests(unittest.TestCase):
+    def test_drive_retries_timeouts(self):
+        from unittest import mock
+        from album_builder import drive
+        from album_builder.errors import AlbumError
+
+        calls = []
+
+        class Req:
+            def execute(self):
+                calls.append(1)
+                if len(calls) < 3:
+                    raise TimeoutError("The read operation timed out")
+                return {"ok": True}
+
+        with mock.patch.object(drive.time, "sleep"):
+            self.assertEqual(drive.DriveClient._execute(Req()), {"ok": True})
+
+            class Down:
+                def execute(self):
+                    raise TimeoutError("The read operation timed out")
+
+            with self.assertRaises(AlbumError):
+                drive.DriveClient._execute(Down())
+
+
+class AgeMatchTests(unittest.TestCase):
+    """Arié bébé ne doit pas être pris pour Eydel bébé."""
+
+    def setUp(self):
+        import numpy as np
+        unit = lambda v: (np.asarray(v, dtype=float) / np.linalg.norm(v)).tolist()
+        self.baby = unit([1, 0, 0, 0])          # « visage de bébé » commun aux deux
+        self.eydel_big = unit([0, 1, 0, 0])
+        self.arie_big = unit([0, 0, 1, 0])
+        self.births = {"Eydel": date(2021, 7, 14), "Arié": date(2022, 9, 9)}
+        self.sets = {
+            "Eydel": [(self.baby, date(2021, 7, 20)), (self.eydel_big, date(2023, 6, 1))],
+            "Arié": [(self.baby, date(2022, 9, 15)), (self.arie_big, None)],
+        }
+
+    def test_baby_in_2023_is_not_matched_to_newborn_eydel(self):
+        import numpy as np
+        refs = scoring.refs_at(self.sets, self.births, date(2023, 8, 24))
+        self.assertGreater(refs["Eydel"][1], 0.99)   # Eydel à 2 ans : seulement sa photo de 2023
+        face_emb = (np.asarray(self.baby) * 0.8 + np.asarray(self.arie_big) * 0.6).tolist()
+        labels = scoring.face_labels([{"box": [0, 0, 10, 10], "emb": face_emb}], refs, 0.45, margin=0.05)
+        self.assertEqual(labels, ["Arié"])
+
+    def test_newborn_eydel_still_uses_her_baby_photo(self):
+        refs = scoring.refs_at(self.sets, self.births, date(2021, 8, 1))
+        self.assertGreater(refs["Eydel"][0], 0.99)
+
+    def test_reference_dates_found_from_cache(self):
+        from album_builder import pipeline
+        cache = {"a": {"when": "2021-07-20", "feat": {"faces": [{"emb": self.baby}]}},
+                 "b": {"feat": {"faces": [{"emb": self.eydel_big}]}}}
+        found = pipeline.date_references({"Eydel": [("x.jpg", self.baby), ("y.jpg", self.eydel_big)]}, {}, cache)
+        self.assertEqual(found, {"Eydel": {"x.jpg": date(2021, 7, 20)}})
+
+    def test_photo_dates_roundtrip(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = people.save_face(Path(d), "Eydel", b"jpg", date(2021, 7, 20))
+            self.assertEqual(people.photo_dates(Path(d)), {"Eydel": {p.name: date(2021, 7, 20)}})

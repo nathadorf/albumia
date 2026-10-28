@@ -108,3 +108,26 @@ class PipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(cv2 is None, "OpenCV non installé")
+class PipelineWithPeopleTests(unittest.TestCase):
+    def test_build_with_person_and_birth_dates_references(self):
+        from album_builder import cli, people
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            refs = tmp / "refs"
+            img = np.random.default_rng(1).integers(0, 255, (300, 400, 3)).astype(np.uint8)
+            people.save_face(refs, "Eydel", cv2.imencode(".jpg", img)[1].tobytes())
+            people.set_birth(refs, "Eydel", "2025-01-01")
+            client = FakeClient(PipelineTests().make_files())
+            argv = ["--name", "Eydel 2026", "--count", "8", "--folder", "A" * 12, "--year", "2026",
+                    "--must", "Eydel", "--refs-dir", str(refs), "--workdir", str(tmp), "--out", str(tmp / "out")]
+            with mock.patch.object(cli, "_client", return_value=client), \
+                 mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()):
+                cli.main(argv)
+            plan = json.loads(next((tmp / "out").rglob("plan.json")).read_text(encoding="utf-8"))
+            self.assertTrue(plan["photos"])
+            # la référence a reçu la date de la photo analysée qui lui ressemble
+            self.assertTrue(people.photo_dates(refs)["Eydel"])

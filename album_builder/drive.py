@@ -178,7 +178,7 @@ class DriveClient:
         return s
 
     @staticmethod
-    def _execute(request, retries: int = 4):
+    def _execute(request, retries: int = 5):
         for attempt in range(retries):
             try:
                 return request.execute()
@@ -188,6 +188,15 @@ class DriveClient:
                     time.sleep(2 ** attempt)
                     continue
                 raise
+            except OSError as e:  # coupure réseau, délai dépassé, erreur SSL passagère
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise AlbumError(
+                    "La connexion avec Google Drive a été coupée. Vérifie internet, puis relance : "
+                    "les photos déjà analysées ne seront pas refaites.",
+                    code="network",
+                ) from e
 
     # ---- lecture ----------------------------------------------------------
     def whoami(self) -> str:

@@ -223,7 +223,18 @@ def analyze(img: np.ndarray, engine: FaceEngine | None, with_embedding: bool = T
 
 def build_references(engine: FaceEngine, refs_dir: Path) -> dict[str, list[float]]:
     """refs/<étiquette>/*.jpg -> une empreinte moyenne par personne ou groupe."""
-    refs: dict[str, list[float]] = {}
+    return {name: mean_embedding([e for _, e in photos])
+            for name, photos in reference_embeddings(engine, refs_dir).items()}
+
+
+def mean_embedding(embs) -> list[float]:
+    mean = np.mean(np.asarray(embs, dtype=float), axis=0)
+    return (mean / (np.linalg.norm(mean) or 1.0)).tolist()
+
+
+def reference_embeddings(engine: FaceEngine, refs_dir: Path) -> dict[str, list[tuple[str, list[float]]]]:
+    """refs/<étiquette>/*.jpg -> [(nom de la photo, empreinte)] par personne."""
+    refs: dict[str, list[tuple[str, list[float]]]] = {}
     if not refs_dir.exists():
         return refs
     for label_dir in sorted(p for p in refs_dir.iterdir() if p.is_dir()):
@@ -246,10 +257,9 @@ def build_references(engine: FaceEngine, refs_dir: Path) -> dict[str, list[float
             biggest = max(faces, key=lambda f: f["box"][2] * f["box"][3])
             if len(faces) > 1:
                 print(f"  ! {path.name} contient {len(faces)} visages : le plus grand est utilisé")
-            embs.append(np.array(biggest["emb"]))
+            embs.append((path.name, list(biggest["emb"])))
         if embs:
-            mean = np.mean(embs, axis=0)
-            refs[label_dir.name] = (mean / (np.linalg.norm(mean) or 1.0)).tolist()
+            refs[label_dir.name] = embs
             print(f"  référence « {label_dir.name} » : {len(embs)} photo(s)")
         else:
             print(f"  ! dossier de référence « {label_dir.name} » sans visage exploitable")

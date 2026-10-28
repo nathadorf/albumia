@@ -152,6 +152,31 @@ def face_labels(
     return out
 
 
+def months_between(start: date, end: date) -> int:
+    return (end.year - start.year) * 12 + end.month - start.month - (end.day < start.day)
+
+
+def refs_at(ref_sets: dict, births: dict[str, date], when: date) -> dict[str, list[float]]:
+    """Empreinte de chaque personne à l'âge qu'elle avait le jour `when`.
+
+    `ref_sets` : {personne: [(empreinte, date de la photo ou None)]}. Un bébé change vite : Arié à
+    11 mois se compare à Eydel à 2 ans (son âge ce jour-là), pas à Eydel nouveau-née.
+    """
+    out = {}
+    for name, items in ref_sets.items():
+        chosen = [e for e, _ in items]
+        birth = births.get(name)
+        if birth and when >= birth:
+            age = months_between(birth, when)
+            window = max(6, age // 2)
+            near = [e for e, d in items if d is None or abs(months_between(birth, d) - age) <= window]
+            if any(d is not None and abs(months_between(birth, d) - age) <= window for _, d in items):
+                chosen = near
+        mean = np.mean(np.asarray(chosen, dtype=float), axis=0)
+        out[name] = (mean / (np.linalg.norm(mean) or 1.0)).tolist()
+    return out
+
+
 def match_labels(
     faces: list[dict], refs: dict[str, list[float]], threshold: float, margin: float = MATCH_MARGIN
 ) -> set[str]:
