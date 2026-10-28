@@ -99,10 +99,10 @@ def judge_photos(files, cache, thumbs_dir: Path, editor_path: Path, model_dir: P
     return editor
 
 
-def look_closer(files, thumbs_dir: Path, editor_path: Path, editor: dict, model_dir: Path, rep, cancel) -> None:
-    """Œil plus précis (ViT-L/14) sur les photos de la période : une seule fois, gardé en cache."""
-    todo = [f for f in files if f.id in editor and editor[f.id].get("vl") != aesthetic.LARGE_VERSION
-            and (thumbs_dir / f"{f.id}.jpg").exists()]
+def look_closer(ids, thumbs_dir: Path, editor_path: Path, editor: dict, model_dir: Path, rep, cancel) -> None:
+    """Œil plus précis (ViT-L/14) sur ces photos : une seule fois, gardé en cache."""
+    todo = [i for i in dict.fromkeys(ids) if i in editor and editor[i].get("vl") != aesthetic.LARGE_VERSION
+            and (thumbs_dir / f"{i}.jpg").exists()]
     if not todo:
         return
     eye = aesthetic.load_large(model_dir, rep.note)
@@ -110,14 +110,14 @@ def look_closer(files, thumbs_dir: Path, editor_path: Path, editor: dict, model_
         return
     minutes = max(1, round(len(todo) * 2 / 60))
     rep.note(f"Regard plus précis sur {len(todo)} photos (une seule fois, environ {minutes} min)…")
-    for i, f in enumerate(todo, 1):
+    for n, fid in enumerate(todo, 1):
         if cancel.is_set():
             break
-        img = vision.imread(thumbs_dir / f"{f.id}.jpg")
+        img = vision.imread(thumbs_dir / f"{fid}.jpg")
         if img is not None:
-            editor[f.id]["vec_l"], editor[f.id]["vl"] = eye.vector(img), aesthetic.LARGE_VERSION
-        rep.advance(i, len(todo))
-        if i % 50 == 0:
+            editor[fid]["vec_l"], editor[fid]["vl"] = eye.vector(img), aesthetic.LARGE_VERSION
+        rep.advance(n, len(todo))
+        if n % 50 == 0:
             _save_cache(editor_path, editor)
     _save_cache(editor_path, editor)
     if cancel.is_set():
@@ -405,7 +405,10 @@ def build_plan(
     if failed:
         rep.note(f"{failed} photo(s) sans aperçu Drive, ignorées.")
     editor = judge_photos(files, cache, thumbs_dir, workdir / ".cache" / "editor.json", model_dir, rep, cancel)
-    look_closer(files, thumbs_dir, workdir / ".cache" / "editor.json", editor, model_dir, rep, cancel)
+    # les photos de ses relectures d'autres albums servent aussi à apprendre son goût
+    shown = taste.load_examples(workdir)
+    look_closer([f.id for f in files] + list(shown["pos"]) + list(shown["neg"]),
+                thumbs_dir, workdir / ".cache" / "editor.json", editor, model_dir, rep, cancel)
 
     rep.step(4, "Choix des meilleures photos…")
     dated = False
@@ -535,8 +538,17 @@ def build_plan(
         rep.note(f"Je ne connais pas encore {', '.join(unknown_age)} à cet âge : donne-leur un prénom "
                  "dans « Qui est sur tes photos ? », puis relance l'album, il sera bien meilleur.")
     _save_cache(workdir / ".cache" / "parts.json", all_parts)  # pour mesurer le goût (taste --eval)
-    liked = taste.model_for(workdir, all_parts)
-    if liked:
+    sharp_vecs = {k: v["vec_l"] for k, v in editor.items() if v.get("vec_l")}
+    seen = taste.image_model_for(workdir, sharp_vecs, all_parts)
+    liked = None if seen else taste.model_for(workdir, all_parts)
+    if seen:
+        rep.note(f"Ton goût, appris sur l'image de {seen.size} photos gardées ou retirées, guide le choix.")
+        for c in cands:
+            vec = sharp_vecs.get(c.file_id)
+            if vec:
+                c.parts["taste"] = seen.predict(vec, c.parts)
+                c.local_score = c.score = (1 - taste.IMAGE_WEIGHT) * c.score + taste.IMAGE_WEIGHT * c.parts["taste"]
+    elif liked:
         rep.note(f"Ton goût, appris sur {liked.size} photos gardées ou retirées, compte dans le choix.")
         for c in cands:
             c.parts["taste"] = liked.predict(c.parts)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from album_builder import scenes, scoring
+from album_builder import scenes, scoring, taste
 from album_builder.pipeline import previous_review
 from tests.test_scoring import cand, face
 
@@ -80,6 +80,52 @@ class PinAndMealTests(unittest.TestCase):
                 "ids": ["a", "b"], "removed": [{"id": "c", "reason": "personnes"}, {"id": "e", "reason": "gout"}]}}))
             self.assertEqual(previous_review(Path(d)), ({"a", "b"}, {"c"}))
             self.assertEqual(previous_review(Path(d) / "absent"), (set(), set()))
+
+
+class ImageTasteTests(unittest.TestCase):
+    @staticmethod
+    def embeddings(n=120, seed=0):
+        """Comme de vrais vecteurs CLIP : peu de directions comptent (ici 8), le reste est du bruit."""
+        rng = np.random.default_rng(seed)
+        basis = rng.normal(size=(8, 768))
+        vecs, liked = {}, []
+        for i in range(n):
+            z = rng.normal(size=8)
+            z[0] += 1.5 if i % 2 else -1.5  # la direction qui sépare « gardée » de « retirée »
+            v = z @ basis + 0.3 * rng.normal(size=768)
+            vecs[f"p{i}"] = list(v / np.linalg.norm(v))
+            liked.append(i % 2 == 1)
+        return vecs, liked
+
+    def test_learns_from_image_vectors(self):
+        vecs, liked = self.embeddings()
+        ids = list(vecs)
+        pos = [f for f, k in zip(ids, liked) if k]
+        neg = [f for f, k in zip(ids, liked) if not k]
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), pos[:30], neg[:30])
+            m = taste.image_model_for(Path(d), vecs)
+            self.assertIsNotNone(m)
+            held = [(m.predict(vecs[f], {}), 1) for f in pos[30:]] + [(m.predict(vecs[f], {}), 0) for f in neg[30:]]
+            self.assertGreater(taste.auc([x for x, _ in held], [y for _, y in held]), 0.9)
+
+    def test_needs_enough_examples_and_the_large_eye(self):
+        vecs, liked = self.embeddings()
+        ids = list(vecs)
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), ids[1:20:2], ids[0:20:2])  # 10 par classe : trop peu
+            self.assertIsNone(taste.image_model_for(Path(d), vecs))
+            taste.add_examples(Path(d), ids[1::2], ids[0::2])
+            self.assertIsNone(taste.image_model_for(Path(d), {}))  # pas d'œil plus précis : rien
+
+    def test_unseen_values_do_not_blow_up(self):
+        vecs, liked = self.embeddings()
+        ids = list(vecs)
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), ids[1::2], ids[0::2])
+            m = taste.image_model_for(Path(d), vecs)
+            score = m.predict(vecs[ids[0]], {"scene": 0.9, "smile": 1.0})  # critères constants à l'entraînement
+            self.assertTrue(0.0 <= score <= 1.0)
 
 
 if __name__ == "__main__":

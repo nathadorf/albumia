@@ -87,19 +87,24 @@ class Taste:
         return [(FEATURES[i], round(float(self.w[i]), 2)) for i in order]
 
 
-def train(X: np.ndarray, y: np.ndarray, l2: float = L2, steps: int = 600) -> Taste:
-    """Régression logistique (descente de gradient), classes équilibrées."""
+def train(X: np.ndarray, y: np.ndarray, l2: float = L2, steps: int = 600, lr: float | None = 1.0) -> Taste:
+    """Régression logistique (descente de gradient), classes équilibrées.
+
+    `lr=None` : pas calculé d'après la matrice (stable même avec des centaines de dimensions)."""
     n, d = X.shape
-    w, b = np.zeros(d), 0.0
+    w, bias = np.zeros(d), 0.0
     pos = max(1, int(y.sum()))
     sample_w = np.where(y == 1, n / (2 * pos), n / (2 * max(1, n - pos)))
-    lr = 1.0
+    if lr is None:
+        # la courbure de la perte logistique est au plus 1/4 de celle des moindres carrés
+        lr = 1.0 / (0.25 * float(sample_w.max()) * np.linalg.norm(X, 2) ** 2 / n + l2 / n + 1e-9)
+        steps = max(steps, 1500)
     for _ in range(steps):
-        p = 1.0 / (1.0 + np.exp(-(X @ w + b)))
+        p = 1.0 / (1.0 + np.exp(-np.clip(X @ w + bias, -30, 30)))
         g = (p - y) * sample_w
         w -= lr * (X.T @ g / n + l2 * w / n)
-        b -= lr * float(g.mean())
-    return Taste(w, b, n)
+        bias -= lr * float(g.mean())
+    return Taste(w, bias, n)
 
 
 def _dataset(examples: dict, current: dict[str, dict] | None = None):
@@ -127,6 +132,58 @@ def model_for(workdir: Path, current: dict[str, dict] | None = None, min_auc: fl
     return train(X, y)
 
 
+# ---- goût appris sur l'image entière ---------------------------------------------------------
+# Les ~17 critères lisibles résument mal une photo. Appris directement sur le vecteur de l'œil
+# plus précis (CLIP ViT-L/14) et ces critères, le goût retrouve bien mieux les choix de la famille
+# (relectures d'octobre 2025, 106 photos : AUC 0,97 contre 0,90 ; un album laissé de côté : moitié
+# moins de photos retirées parmi les proposées).
+IMAGE_MIN = 25          # exemples par classe avant de s'y fier
+IMAGE_L2 = (10.0, 30.0, 100.0, 300.0)
+IMAGE_MIN_AUC = 0.75
+IMAGE_WEIGHT = 0.5      # part du goût dans la note quand il est fiable
+
+
+class ImageTaste:
+    def __init__(self, w, b, mean, std, size: int, auc_: float):
+        self.w, self.b, self.mean, self.std, self.size, self.auc = w, b, mean, std, size, auc_
+
+    def predict(self, vec, parts: dict) -> float:
+        x = np.clip((np.concatenate([np.asarray(vec, dtype=float), features(parts)]) - self.mean) / self.std, -6, 6)
+        return round(float(1.0 / (1.0 + np.exp(-np.clip(x @ self.w + self.b, -30, 30)))), 4)
+
+
+def _image_dataset(workdir: Path, vectors: dict[str, list[float]], current: dict[str, dict] | None = None):
+    current = current or {}
+    ex = load_examples(workdir)
+    rows, ys = [], []
+    for label, group in ((1, ex["pos"]), (0, ex["neg"])):
+        for fid, saved in group.items():
+            vec = vectors.get(fid)
+            if vec:
+                rows.append(np.concatenate([np.asarray(vec, dtype=float), features(current.get(fid) or saved)]))
+                ys.append(label)
+    if not rows:
+        return np.zeros((0, 1)), np.zeros(0)
+    return np.asarray(rows), np.asarray(ys, dtype=float)
+
+
+def image_model_for(workdir: Path, vectors: dict[str, list[float]],
+                    current: dict[str, dict] | None = None) -> ImageTaste | None:
+    """Goût appris sur [vecteur de l'image, critères] ; None tant qu'il n'est pas fiable.
+    `vectors` : {photo: vecteur ViT-L/14} pour toutes les photos connues (editor.json)."""
+    X, y = _image_dataset(workdir, vectors, current)
+    if y.sum() < IMAGE_MIN or len(y) - y.sum() < IMAGE_MIN:
+        return None
+    mean, std = X.mean(axis=0), X.std(axis=0) + 1e-6
+    Z = (X - mean) / std
+    scores = {l2: cross_val_auc(Z, y, l2=l2, lr=None) for l2 in IMAGE_L2}
+    best = max(scores, key=lambda l2: scores[l2])
+    if not scores[best] >= IMAGE_MIN_AUC:
+        return None
+    m = train(Z, y, l2=best, lr=None)
+    return ImageTaste(m.w, m.b, mean, std, len(y), round(scores[best], 3))
+
+
 def auc(scores, labels) -> float:
     scores, labels = np.asarray(scores), np.asarray(labels)
     pos, neg = scores[labels == 1], scores[labels == 0]
@@ -136,7 +193,8 @@ def auc(scores, labels) -> float:
                  / (len(pos) * len(neg)))
 
 
-def cross_val_auc(X: np.ndarray, y: np.ndarray, folds: int = 5, l2: float = L2, seed: int = 0) -> float:
+def cross_val_auc(X: np.ndarray, y: np.ndarray, folds: int = 5, l2: float = L2, seed: int = 0,
+                  lr: float = 1.0) -> float:
     if len(y) < 2 * folds:
         return float("nan")
     order = np.random.default_rng(seed).permutation(len(y))
@@ -144,8 +202,8 @@ def cross_val_auc(X: np.ndarray, y: np.ndarray, folds: int = 5, l2: float = L2, 
     for k in range(folds):
         test = order[k::folds]
         train_idx = np.setdiff1d(order, test)
-        m = train(X[train_idx], y[train_idx], l2=l2)
-        preds[test] = 1.0 / (1.0 + np.exp(-(X[test] @ m.w + m.b)))
+        m = train(X[train_idx], y[train_idx], l2=l2, lr=lr)
+        preds[test] = 1.0 / (1.0 + np.exp(-np.clip(X[test] @ m.w + m.b, -30, 30)))
     return auc(preds, y)
 
 
@@ -221,6 +279,18 @@ def main(argv=None) -> None:
             print(f"  {k:<11} AUC seul = {auc(X[:, i], y):.3f}")
         if len(y):
             print("Ce qui compte :", train(X, y).explain(8))
+        try:  # goût sur l'image entière (œil plus précis déjà passé sur ces photos)
+            editor = json.loads((workdir / ".cache" / "editor.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            editor = {}
+        vectors = {k: v["vec_l"] for k, v in editor.items() if v.get("vec_l")}
+        XI, yi = _image_dataset(workdir, vectors, current)
+        print(f"Sur l'image (ViT-L/14) : {int(yi.sum())} aimées, {int(len(yi) - yi.sum())} moins aimées.")
+        if len(yi) >= 10:
+            Z = (XI - XI.mean(axis=0)) / (XI.std(axis=0) + 1e-6)
+            for l2 in IMAGE_L2:
+                runs = [cross_val_auc(Z, yi, l2=l2, lr=None, seed=s) for s in range(3)]
+                print(f"L2={l2:g}: AUC={np.mean(runs):.3f}")
 
 
 if __name__ == "__main__":
