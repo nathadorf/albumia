@@ -120,3 +120,38 @@ class LearnTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EditorTests(unittest.TestCase):
+    """Retours de la comparaison v2 / v3 sur les vraies photos."""
+
+    def test_same_second_copy_and_selfie_series_are_duplicates(self):
+        t = datetime(2021, 7, 16, 11, 21, 12)
+        copy_a = cand(1, t, 0.9, dhash="0" * 16)
+        copy_b = cand(2, t, 0.8, dhash="00000000ffffffff")  # recadrée : empreinte très différente
+        selfies = [cand(10 + i, datetime(2021, 7, 26, 15) + timedelta(seconds=50 * i), 0.7 + i / 100,
+                        dhash=f"{int(h(5), 16) ^ ((1 << (6 * i)) - 1):016x}") for i in range(3)]  # 0, 6 et 12 bits d'écart
+        kept = {c.file_id for c in scoring.dedupe_bursts([copy_a, copy_b] + selfies)}
+        self.assertEqual(kept, {"id1", "id12"})
+
+    def test_same_instant_prefers_another_moment(self):
+        t = datetime(2023, 5, 7, 10)
+        a = cand(1, t, 0.9, dhash=h(1))
+        sofa = cand(2, t + timedelta(minutes=3), 0.85, dhash=h(2))
+        later = cand(3, t + timedelta(minutes=50), 0.8, dhash=h(3))
+        chosen = scoring.select_spread([a, sofa, later], 2)
+        self.assertEqual({c.file_id for c in chosen}, {"id1", "id3"})
+
+    def test_too_small_to_print(self):
+        self.assertTrue(scoring.too_small_to_print(720, 1280, "messagerie"))
+        self.assertFalse(scoring.too_small_to_print(720, 1280, "photo"))
+        self.assertTrue(scoring.too_small_to_print(480, 640, "photo"))
+        self.assertFalse(scoring.too_small_to_print(None, None, "messagerie"))
+
+    def test_selfie_of_someone_else_scores_lower(self):
+        child = face(box=(400, 300, 150, 150)) | {"frontal": 1.0, "edge": False}
+        dad = face(box=(50, 50, 400, 400)) | {"frontal": 1.0, "edge": False}
+        alone, _ = scoring.local_score(feat(faces=[child]), {"Eydel"}, [], labels_per_face=["Eydel"], targets=["Eydel"])
+        selfie, _ = scoring.local_score(feat(faces=[child, dad]), {"Eydel"}, [],
+                                        labels_per_face=["Eydel", None], targets=["Eydel"])
+        self.assertLess(selfie, alone)

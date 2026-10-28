@@ -25,9 +25,11 @@ DEFAULT_MATCH_THRESHOLD = 0.45
 LENIENT_MATCH_THRESHOLD = 0.38
 MATCH_MARGIN = 0.05
 MIN_FACE_AREA = 0.005             # visage < 0,5 % de la photo : fausse détection ou figurant
-MIN_SUBJECT_AREA = 0.01           # personne choisie plus petite que ça : elle n'est pas le sujet
+MIN_SUBJECT_AREA = 0.02           # visage de la personne choisie < 2 % de la photo : elle n'est pas le sujet
 
 PRINT_MIN_SIDE = (800, 1500)      # côté court de l'original (px) : 0 → 1 de note « impression »
+PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image de messagerie) : trop petite pour un album
+SAME_INSTANT_SECONDS = 600        # deux photos à moins de 10 min : même instant, on préfère varier
 STAR_BONUS = 0.12                 # photo étoilée dans Drive
 MOMENT_GAP_HOURS = 2              # plus de 2 h sans photo : un nouveau moment commence
 SHOT_TARGETS = {"gros plan": 0.4, "plan moyen": 0.4, "scène": 0.2}
@@ -57,6 +59,13 @@ def photo_kind(name: str, camera: str = "", width: int | None = None, height: in
     if not camera and width and height and max(width, height) / max(1, min(width, height)) >= 1.95:
         return "capture"  # format d'écran de téléphone, sans appareil photo
     return "photo"
+
+
+def too_small_to_print(width: int | None, height: int | None, kind: str = "photo") -> bool:
+    if not width or not height:
+        return False
+    limit = PRINT_MIN_SIDE[0] if kind == "messagerie" else PRINT_REJECT_SIDE
+    return min(width, height) < limit
 
 
 def print_score(width: int | None, height: int | None) -> float:
@@ -183,6 +192,11 @@ def local_score(
     framing = faces_score(focus, feat["w"], feat["h"], total=len(faces))
     if focus and max(focus, key=lambda f: f["box"][2] * f["box"][3]).get("edge"):
         framing *= 0.6  # visage principal coupé par le bord
+    if focus is not faces and focus:
+        # selfie ou photo centrée sur quelqu'un d'autre : un autre visage est bien plus grand
+        area = lambda f: f["box"][2] * f["box"][3]
+        if max(area(f) for f in faces) > 2 * max(area(f) for f in focus):
+            framing *= 0.5
     resolution = print_score(meta.get("width"), meta.get("height"))
     if meta.get("kind") == "messagerie":
         resolution *= 0.5
@@ -215,11 +229,14 @@ def dedupe_bursts(
     hash_threshold: int = 10,
     window_seconds: int = 900,
     twin_threshold: int = 4,
+    burst_seconds: int = 180,
+    burst_threshold: int = 22,
 ) -> list[Candidate]:
     """Garde la meilleure photo de chaque groupe de doublons.
 
-    Doublons = images proches visuellement ET prises à moins de `window_seconds` (rafale, même
-    scène), ou quasi identiques quelle que soit la date (copie, photo réenregistrée).
+    Doublons = images proches visuellement ET prises à moins de `window_seconds` (même scène),
+    assez proches et prises à moins de `burst_seconds` (série de selfies), prises à la même
+    seconde (copie « photo(1).jpg »), ou quasi identiques quelle que soit la date (photo réenregistrée).
     """
     ordered = sorted(items, key=lambda c: c.when)
     n = len(ordered)
@@ -240,8 +257,10 @@ def dedupe_bursts(
         for i in range(n - 1):
             xor = np.bitwise_xor(hashes[i + 1 :], hashes[i])
             dist = np.unpackbits(xor.view(np.uint8).reshape(-1, 8), axis=1).sum(axis=1)
-            close = (times[i + 1 :] - times[i]) <= window_seconds
-            for k in np.nonzero((dist <= twin_threshold) | (close & (dist <= hash_threshold)))[0]:
+            dt = times[i + 1 :] - times[i]
+            dup = ((dist <= twin_threshold) | ((dt <= window_seconds) & (dist <= hash_threshold))
+                   | ((dt <= burst_seconds) & (dist <= burst_threshold)) | (dt < 1.0))
+            for k in np.nonzero(dup)[0]:
                 union(i + 1 + int(k), i)
 
     best: dict[int, Candidate] = {}
@@ -322,6 +341,8 @@ def diversity_penalty(c: Candidate, chosen: list[Candidate], strength: float = 0
         return 0.0
     sim = max(similarity(c, o) for o in chosen)
     penalty = strength * max(0.0, sim - 0.55) / 0.45
+    if any(abs((c.when - o.when).total_seconds()) < SAME_INSTANT_SECONDS for o in chosen):
+        penalty += 0.12  # même instant qu'une photo retenue : on préfère un autre moment de la journée
     if len(chosen) >= 4:
         shot = c.meta.get("shot", "scène")
         penalty += 0.06 * max(0.0, _share(chosen, lambda o: o.meta.get("shot", "scène"), shot) - SHOT_TARGETS.get(shot, 0.4))

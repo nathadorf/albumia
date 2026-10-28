@@ -192,7 +192,7 @@ def build_plan(
     rep.step(4, "Choix des meilleures photos…")
     births = people.births(refs_dir)
     cands: list[scoring.Candidate] = []
-    rejected = {"sans analyse": 0, "pas une photo": 0, "floue": 0, "personne absente": 0,
+    rejected = {"sans analyse": 0, "pas une photo": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0}
     for f in files:
         entry = cache.get(f.id)
@@ -218,6 +218,8 @@ def build_plan(
         area = float(feat["w"] * feat["h"]) or 1.0
         if kind == "capture":
             rejected["pas une photo"] += 1
+        elif scoring.too_small_to_print(f.width, f.height, kind):
+            rejected["trop petite pour l'impression"] += 1
         elif c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
             rejected["floue"] += 1
         elif params.must and not all(m in labels for m in params.must):
