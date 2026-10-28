@@ -570,3 +570,8 @@ class FamilyHolidayTests(unittest.TestCase):
         sel = scoring.select_spread(items, 20, decor_max=scoring.DECOR_MAX_SHARE)
         self.assertLessEqual(sum(1 for c in sel if not c.feat["faces"]), 2)
         self.assertEqual(len(sel), 20)
+
+    def test_holiday_without_year_follows_the_photos(self):
+        it = interpret("Souccot en famille", self.FAMILY, today=self.TODAY,
+                       span=(date(2025, 10, 3), date(2025, 10, 16)))
+        self.assertEqual(it.date_from, "2025-10-02")

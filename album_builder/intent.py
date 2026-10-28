@@ -167,15 +167,20 @@ def _end_of_month(year: int, month: int) -> date:
     return nxt - timedelta(days=1)
 
 
-def _holiday(t: str, years: list[int], today: date) -> tuple[date | None, date | None, str]:
-    """« Souccot 2025 », « Hanouka » (sans année : la dernière passée)."""
+def _holiday(t: str, years: list[int], today: date, span=None) -> tuple[date | None, date | None, str]:
+    """« Souccot 2025 », « Hanouka » (sans année : celle des photos choisies, sinon la dernière passée)."""
     from .hebcal import holiday
 
     for key, (words, label) in HOLIDAYS.items():
         if re.search(rf"(?<![a-z])(?:{words})(?![a-z])", t):
             year = years[-1] if years else today.year
             lo, hi = holiday(key, year)
-            if not years and lo > today:
+            if not years and span:
+                hits = [holiday(key, y) for y in range(span[0].year - 1, span[1].year + 1)]
+                hits = [h for h in hits if h[0] <= span[1] and h[1] >= span[0]]
+                if hits:
+                    lo, hi = hits[-1]
+            elif not years and lo > today:
                 lo, hi = holiday(key, year - 1)
             return lo, hi, f"{label} {hi.year if key == 'hanouka' and not years else lo.year}"
     return None, None, ""
@@ -195,14 +200,14 @@ def holiday_in(lo: date, hi: date) -> str:
     return ""
 
 
-def _period(t: str, today: date) -> tuple[date | None, date | None, str]:
+def _period(t: str, today: date, span=None) -> tuple[date | None, date | None, str]:
     years = sorted({int(y) for y in re.findall(r"\b((?:19|20)\d{2})\b", t)})
     if not years:
         if re.search(r"cette annee|de l'annee\b", t):
             years = [today.year]
         elif re.search(r"l'annee (?:derniere|passee)|annee derniere", t):
             years = [today.year - 1]
-    lo, hi, label = _holiday(t, years, today)
+    lo, hi, label = _holiday(t, years, today, span)
     if lo:
         return lo, hi, label
 
@@ -253,9 +258,11 @@ AGE_WORDS = {"deux": 2, "trois": 3, "quatre": 4, "cinq": 5}
 
 
 def interpret(text: str, people: list[str], selected: list[str] | None = None,
-              today: date | None = None, births: dict[str, date] | None = None) -> Intent:
+              today: date | None = None, births: dict[str, date] | None = None,
+              span: tuple[date, date] | None = None) -> Intent:
     """`people` : toutes les personnes connues ; `selected` : celles cochées dans l'interface ;
-    `births` : dates de naissance connues (« la première année d'Eydel », « Arié à 2 ans »)."""
+    `births` : dates de naissance connues (« la première année d'Eydel », « Arié à 2 ans ») ;
+    `span` : première et dernière date des photos choisies, quand on les connaît."""
     today = today or date.today()
     t = normalize(text or "")
     it = Intent()
@@ -264,7 +271,7 @@ def interpret(text: str, people: list[str], selected: list[str] | None = None,
     if n:
         it.count = max(1, min(MAX_COUNT, n))
         it.understood.append(f"{it.count} photos")
-    lo, hi, label = _period(t, today)
+    lo, hi, label = _period(t, today, span)
     if lo:
         it.date_from, it.date_to, it.period_label = lo.isoformat(), hi.isoformat(), label
         it.understood.append(f"période : {label}")

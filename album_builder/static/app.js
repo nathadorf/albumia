@@ -362,7 +362,7 @@ function interpretSoon(delay = 350) {
 async function runInterpret() {
   const prompt = $("#prompt").value;
   let it;
-  try { it = await api("/api/interpret", { method: "POST", body: { prompt, selected: [...state.selected] } }); }
+  try { it = await api("/api/interpret", { method: "POST", body: { prompt, selected: [...state.selected], source: useGphotos() ? "gphotos" : "drive" } }); }
   catch { return; }
   state.intent = it;
   // les personnes citées dans le texte sont cochées automatiquement
@@ -468,7 +468,7 @@ async function loadGphotos() {
   $("#gphotos-use").checked = !!(state.gphotos && state.gphotos.count) && store.get("source", "") === "gphotos";
   updateBuildButton();
 }
-$("#gphotos-use").addEventListener("change", () => { store.set("source", $("#gphotos-use").checked ? "gphotos" : "drive"); updateBuildButton(); });
+$("#gphotos-use").addEventListener("change", () => { store.set("source", $("#gphotos-use").checked ? "gphotos" : "drive"); updateBuildButton(); interpretSoon(0); });
 $("#btn-gphotos-clear").addEventListener("click", async () => {
   if (!confirm("Oublier les photos choisies dans Google Photos ? (Rien n'est effacé dans Google Photos.)")) return;
   renderGphotos(await api("/api/gphotos", { method: "DELETE" }));

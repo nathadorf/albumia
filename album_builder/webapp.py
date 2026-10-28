@@ -447,7 +447,14 @@ def interpret():
     names = [p["name"] for p in people.list_people(REFS)]
     selected = [s for s in body.get("selected", []) if s in names]
     births = people.births(REFS)
-    return jsonify(intent.interpret(body.get("prompt", ""), names, selected, births=births).to_dict())
+    span = None
+    if body.get("source") == "gphotos":  # « Souccot » sans année : celui des photos choisies
+        from . import gphotos
+
+        summ = gphotos.summary(ROOT)
+        if summ["from"]:
+            span = (date.fromisoformat(summ["from"]), date.fromisoformat(summ["to"]))
+    return jsonify(intent.interpret(body.get("prompt", ""), names, selected, births=births, span=span).to_dict())
 
 
 @app.get("/api/themes")
