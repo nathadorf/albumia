@@ -23,7 +23,7 @@ class SceneTests(unittest.TestCase):
     def setUp(self):
         index = {prompt: i for i, (_, prompt, _) in enumerate(scenes.SCENES)}
         patcher = unittest.mock.patch.object(scenes.aesthetic, "theme_vector",
-                                             side_effect=lambda _d, prompt, _n=None: _unit(index[prompt]))
+                                             side_effect=lambda _d, prompt, _n=None, large=False: _unit(index[prompt]))
         patcher.start()
         self.addCleanup(patcher.stop)
         self.at = {label: i for i, (label, _, _) in enumerate(scenes.SCENES)}
@@ -36,11 +36,11 @@ class SceneTests(unittest.TestCase):
 
     def test_clear_banal_scene_is_flagged(self):
         out = scenes.describe_all({"bus": self.vec(Magasin=0.30, Piscine=0.20)}, Path("."), note=lambda *_: None)
-        self.assertEqual(out["bus"], ("Magasin", True))
+        self.assertEqual(out["bus"][:2], ("Magasin", True))
 
     def test_hesitation_keeps_the_photo_with_the_best_souvenir(self):
         out = scenes.describe_all({"p": self.vec(Magasin=0.30, Piscine=0.29)}, Path("."), note=lambda *_: None)
-        self.assertEqual(out["p"], ("Piscine", False))
+        self.assertEqual(out["p"][:2], ("Piscine", False))
 
     def test_interest_learns_from_reviews(self):
         labels = {"a": "Piscine", "b": "Piscine", "c": "Au téléphone", "d": "Au téléphone"}

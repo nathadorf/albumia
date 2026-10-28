@@ -48,7 +48,7 @@ SCENES = [
     ("Animaux", "a child looking at animals at a zoo or a farm", SOUVENIR),
     ("Dans l'avion", "children sitting in an airplane seat", SOUVENIR),
     ("Rue le soir", "a city street at night with people", PLACE),
-    ("Le Kotel", "a family at the Western Wall in Jerusalem", PLACE),
+    ("Le Kotel", "the Western Wall in Jerusalem with large stone blocks, people praying", PLACE),
     ("Monument", "a famous landmark or monument", PLACE),
     ("Paysage", "a beautiful landscape view", PLACE),
     ("Objet de fête", "an ornate decorated chair or a religious object", PLACE),
@@ -57,6 +57,10 @@ SCENES = [
     ("Intérieur de bus", "the inside of a bus or a tram", BANAL),
     ("Valises", "suitcases at an airport or in a hall", SOUVENIR),
     ("Enfants de dos", "children seen from behind", BANAL),
+    ("Banderole", "a banner", BANAL),
+    ("Enseigne", "a shop or a restaurant sign", BANAL),
+    ("Bâtiment", "a building exterior", BANAL),
+    ("Hall d'hôtel", "a hotel lobby or a library", BANAL),
     ("Station de tram", "a tram station", BANAL),
     ("Rue", "a city street with traffic and buildings", BANAL),
     ("Magasin", "a supermarket aisle", BANAL),
@@ -77,6 +81,7 @@ SCENES = [
     ("Pieds", "people's feet on the floor", BANAL),
 ]
 KIND = {label: kind for label, _, kind in SCENES}
+BANAL_MARGIN_LARGE = 0.02  # œil plus précis : 18 retraits sur 55 repérés, aucune photo gardée masquée
 BANAL_MARGIN = 0.025    # « sans intérêt » seulement s'il l'emporte nettement sur toute autre scène
 FAMILY_FACE_AREA = 0.03  # … et si personne de la famille n'est bien visible (visage ≥ 3 % de l'image)
 MEAL_MAX = 2            # la famille garde peu de repas : 2 par album au plus
@@ -85,15 +90,16 @@ PRIOR_WEIGHT = 3        # nombre de photos « imaginaires » derrière l'a prior
 WEIGHT = 0.15           # part de l'intérêt de la description dans la note
 
 
-def describe_all(vecs: dict[str, list[float]], model_dir: Path, note=print) -> dict[str, tuple[str, bool]]:
-    """{photo: (description, sans intérêt net)} ; vide si l'œil d'éditeur n'est pas disponible.
+def describe_all(vecs: dict[str, list[float]], model_dir: Path, note=print, large: bool = False) -> dict[str, tuple[str, bool, float]]:
+    """{photo: (description, sans intérêt net, écart « sans intérêt » − meilleure autre scène)} ; vide si l'œil d'éditeur n'est pas disponible.
 
     La description affichée est la meilleure scène qui n'est pas « sans intérêt » quand celle-ci
     ne l'emporte pas nettement (hésitation : on donne sa chance à la photo)."""
     vecs = {k: v for k, v in vecs.items() if v}
     if not vecs:
         return {}
-    texts = [aesthetic.theme_vector(model_dir, prompt, note) for _, prompt, _ in SCENES]
+    texts = [aesthetic.theme_vector(model_dir, prompt, note, large=large) for _, prompt, _ in SCENES]
+    margin = BANAL_MARGIN_LARGE if large else BANAL_MARGIN
     if any(t is None for t in texts):
         return {}
     ids = list(vecs)
@@ -103,10 +109,10 @@ def describe_all(vecs: dict[str, list[float]], model_dir: Path, note=print) -> d
     out = {}
     for row, fid in zip(sims, ids):
         best = int(np.argmax(row))
-        clear = bool(banal[best]) and row[banal].max() - row[~banal].max() >= BANAL_MARGIN
+        clear = bool(banal[best]) and row[banal].max() - row[~banal].max() >= margin
         if banal[best] and not clear:
             best = int(others[np.argmax(row[others])])
-        out[fid] = (SCENES[best][0], clear)
+        out[fid] = (SCENES[best][0], clear, round(float(row[banal].max() - row[~banal].max()), 4))
     return out
 
 

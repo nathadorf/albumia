@@ -25,6 +25,16 @@ FILES = {
     "clip_text.onnx": "onnx/text_model_quantized.onnx",
     "clip_tokenizer.json": "tokenizer.json",
 }
+# œil plus précis (CLIP ViT-L/14, ~430 Mo, ~2 s par photo la première fois) : sert à décrire les
+# scènes (« sans intérêt » repéré deux fois mieux sur les relectures de la famille, oct. 2025)
+LARGE_HF = "https://huggingface.co/Xenova/clip-vit-large-patch14/resolve/main/"
+LARGE_MIRROR = "https://hf-mirror.com/Xenova/clip-vit-large-patch14/resolve/main/"
+LARGE_FILES = {
+    "clipL_vision.onnx": "onnx/vision_model_quantized.onnx",
+    "clipL_text.onnx": "onnx/text_model_quantized.onnx",
+    "clip_tokenizer.json": "tokenizer.json",  # le même que celui de ViT-B/32
+}
+LARGE_VERSION = 1
 MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
 STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
 VERSION = 3  # à changer si les descriptions ci-dessous changent (3 : types de scène)
@@ -121,6 +131,33 @@ class Judge:
         return scene_of(np.asarray(vec, dtype=float), self.text_vectors["_scenes"][0])
 
 
+class LargeEye:
+    """Vecteur CLIP ViT-L/14 d'une miniature (même découpage que l'œil d'éditeur)."""
+
+    def __init__(self, model_dir: Path):
+        import onnxruntime as ort
+
+        path = vision.ensure_model(model_dir / "clipL_vision.onnx",
+                                   tuple(u + LARGE_FILES["clipL_vision.onnx"] for u in (LARGE_HF, LARGE_MIRROR)))
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        self.vision = ort.InferenceSession(str(path), opts, providers=["CPUExecutionProvider"])
+
+    def vector(self, img_bgr: np.ndarray) -> list[float]:
+        out = _pick_embeds(self.vision, self.vision.run(None, {self.vision.get_inputs()[0].name: letterbox(img_bgr)}))[0]
+        return [round(float(x), 4) for x in out / (np.linalg.norm(out) or 1.0)]
+
+
+def load_large(model_dir: Path, note=print) -> LargeEye | None:
+    if os.environ.get("ALBUMIA_NO_EDITOR"):
+        return None
+    try:
+        return LargeEye(model_dir)
+    except Exception as e:  # pas de réseau, modèle corrompu : on garde l'œil habituel
+        note(f"Œil plus précis indisponible ({e}).")
+    return None
+
+
 def _text_embedder(ort, Tokenizer, paths):
     tok = Tokenizer.from_file(str(paths["clip_tokenizer.json"]))
     tok.enable_padding(length=77, pad_id=49407)
@@ -139,9 +176,10 @@ def _text_embedder(ort, Tokenizer, paths):
     return embed
 
 
-def theme_vector(model_dir: Path, prompt: str, note=print) -> np.ndarray | None:
-    """Description du thème -> vecteur CLIP (gardé dans models/clip_themes.json)."""
-    cache_path = model_dir / "clip_themes.json"
+def theme_vector(model_dir: Path, prompt: str, note=print, large: bool = False) -> np.ndarray | None:
+    """Description du thème -> vecteur CLIP (gardé dans models/clip_themes.json, ou clipL_themes.json
+    pour l'œil plus précis)."""
+    cache_path = model_dir / ("clipL_themes.json" if large else "clip_themes.json")
     try:
         saved = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -154,9 +192,11 @@ def theme_vector(model_dir: Path, prompt: str, note=print) -> np.ndarray | None:
         import onnxruntime as ort
         from tokenizers import Tokenizer
 
-        paths = {name: vision.ensure_model(model_dir / name, (HF + src, MIRROR + src))
-                 for name, src in FILES.items() if name != "clip_vision.onnx"}
-        vec = _text_embedder(ort, Tokenizer, paths)([prompt])[0]
+        hf, mirror, files = (LARGE_HF, LARGE_MIRROR, LARGE_FILES) if large else (HF, MIRROR, FILES)
+        paths = {name: vision.ensure_model(model_dir / name, (hf + src, mirror + src))
+                 for name, src in files.items() if "vision" not in name}
+        text = paths.get("clipL_text.onnx") or paths["clip_text.onnx"]
+        vec = _text_embedder(ort, Tokenizer, {**paths, "clip_text.onnx": text})([prompt])[0]
     except Exception as e:  # pas de modèle : l'album se fait sans le thème
         note(f"Thème non pris en compte ({e}).")
         return None

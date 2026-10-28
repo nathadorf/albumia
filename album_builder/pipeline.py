@@ -99,6 +99,31 @@ def judge_photos(files, cache, thumbs_dir: Path, editor_path: Path, model_dir: P
     return editor
 
 
+def look_closer(files, thumbs_dir: Path, editor_path: Path, editor: dict, model_dir: Path, rep, cancel) -> None:
+    """Œil plus précis (ViT-L/14) sur les photos de la période : une seule fois, gardé en cache."""
+    todo = [f for f in files if f.id in editor and editor[f.id].get("vl") != aesthetic.LARGE_VERSION
+            and (thumbs_dir / f"{f.id}.jpg").exists()]
+    if not todo:
+        return
+    eye = aesthetic.load_large(model_dir, rep.note)
+    if eye is None:
+        return
+    minutes = max(1, round(len(todo) * 2 / 60))
+    rep.note(f"Regard plus précis sur {len(todo)} photos (une seule fois, environ {minutes} min)…")
+    for i, f in enumerate(todo, 1):
+        if cancel.is_set():
+            break
+        img = vision.imread(thumbs_dir / f"{f.id}.jpg")
+        if img is not None:
+            editor[f.id]["vec_l"], editor[f.id]["vl"] = eye.vector(img), aesthetic.LARGE_VERSION
+        rep.advance(i, len(todo))
+        if i % 50 == 0:
+            _save_cache(editor_path, editor)
+    _save_cache(editor_path, editor)
+    if cancel.is_set():
+        raise Cancelled()
+
+
 def is_selfie(faces, per_face, births, when, feat) -> bool:
     """Un adulte de la famille en très gros plan : selfie pris à bout de bras."""
     area = float(feat["w"] * feat["h"]) or 1.0
@@ -107,6 +132,33 @@ def is_selfie(faces, per_face, births, when, feat) -> bool:
         if adult and face["box"][2] * face["box"][3] / area >= scoring.SELFIE_FACE_AREA:
             return True
     return False
+
+
+# ce qui n'est pas un souvenir de famille, même avec un visage dessus (affiche, écran, publicité)
+OBJECT_PROMPTS = [
+    "an advertisement poster on a wall", "a photo of a phone screen or a computer screen",
+    "a banner or a sign with text", "a supermarket shelf with products", "a shop or a restaurant sign",
+    "an empty room or a corridor", "a city street with buildings and a tram", "a fridge door with magnets",
+    "a restaurant menu", "a projection screen in a hall", "a building exterior", "a hotel lobby or a library",
+]
+PEOPLE_PROMPTS = ["a photo of a child", "a family photo", "a baby", "children playing", "a portrait of a person"]
+OBJECT_MARGIN = 0.02
+
+
+def object_photos(files, editor, model_dir: Path, rep) -> set[str]:
+    """Photos qui ressemblent nettement plus à un objet ou un décor qu'à des gens."""
+    vecs = {f.id: (editor.get(f.id) or {}).get("vec") for f in files}
+    vecs = {k: v for k, v in vecs.items() if v}
+    if not vecs:
+        return set()
+    obj = [aesthetic.theme_vector(model_dir, x, rep.note) for x in OBJECT_PROMPTS]
+    ppl = [aesthetic.theme_vector(model_dir, x, rep.note) for x in PEOPLE_PROMPTS]
+    if any(v is None for v in obj + ppl):
+        return set()
+    ids = list(vecs)
+    mat = np.asarray([vecs[i] for i in ids], dtype=float)
+    gap = (mat @ np.vstack(obj).T).max(axis=1) - (mat @ np.vstack(ppl).T).max(axis=1)
+    return {fid for fid, g in zip(ids, gap) if g > OBJECT_MARGIN}
 
 
 def previous_review(out_dir: Path) -> tuple[set[str], set[str]]:
@@ -353,6 +405,7 @@ def build_plan(
     if failed:
         rep.note(f"{failed} photo(s) sans aperçu Drive, ignorées.")
     editor = judge_photos(files, cache, thumbs_dir, workdir / ".cache" / "editor.json", model_dir, rep, cancel)
+    look_closer(files, thumbs_dir, workdir / ".cache" / "editor.json", editor, model_dir, rep, cancel)
 
     rep.step(4, "Choix des meilleures photos…")
     dated = False
@@ -373,7 +426,12 @@ def build_plan(
     ref_sets = {n: [(e, dates.get(n, {}).get(photo)) for photo, e in v] for n, v in ref_photos.items()}
     refs_by_month: dict = {}
     themed = album_theme(params, files, editor, model_dir, rep)
-    described = scenes.describe_all({f.id: (editor.get(f.id) or {}).get("vec") for f in files}, model_dir, rep.note)
+    # les descriptions viennent de l'œil plus précis quand il a vu la photo, sinon de l'œil habituel
+    sharp = {f.id: editor[f.id]["vec_l"] for f in files if (editor.get(f.id) or {}).get("vec_l")}
+    described = {**scenes.describe_all({f.id: (editor.get(f.id) or {}).get("vec") for f in files if f.id not in sharp},
+                                       model_dir, rep.note),
+                 **scenes.describe_all(sharp, model_dir, rep.note, large=True)}
+    objects = object_photos(files, editor, model_dir, rep)
     examples = taste.load_examples(workdir)
     liked_scene = scenes.interest(examples, {k: v[0] for k, v in described.items()})
     all_parts: dict[str, dict] = {}
@@ -395,7 +453,7 @@ def build_plan(
         vec = (editor.get(fid) or {}).get("vec")
         if vec and fid in by_id:
             banned_vecs.setdefault(by_id[fid].when.date(), []).append((by_id[fid].name, vec))
-    rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "sans intérêt": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
+    rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "objet ou décor": 0, "sans intérêt": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0, "personne de la famille": 0, "hors thème": 0}
     for f in files:
         entry = cache.get(f.id)
@@ -424,7 +482,8 @@ def build_plan(
                   "scene": (editor.get(f.id) or {}).get("scene"),
                   "shot": scoring.shot_type(feat, focus or faces),
                   "selfie": is_selfie(faces, per_face, births, f.when.date(), feat)}
-        scene, dull = described.get(f.id, ("", False))
+        scene, dull, gap = described.get(f.id, ("", False, -1.0))
+        dull = dull or (not faces and gap >= 0)  # sans visage, le moindre doute suffit
         c.meta["meal"] = scenes.KIND.get(scene) == scenes.MEAL
         c.note = scene
         c.local_score, c.parts = scoring.local_score(
@@ -449,6 +508,10 @@ def build_plan(
             rejected["pas une photo"] += 1
         elif (c.meta["editor"] or {}).get("not_album", 0) > aesthetic.NOT_ALBUM_REJECT:
             rejected["pas pour un album"] += 1
+        # un décor sans personne de la famille n'est pas sauvé par le thème ni par un « lieu »
+        # (banderole, enseigne, hall d'hôtel prenaient le libellé « Kotel » ou « fête »)
+        elif f.id in objects and not labels and f.id not in kept:
+            rejected["objet ou décor"] += 1
         elif dull and not family_close and f.id not in kept and not themed.get(f.id, (0, False))[1]:
             rejected["sans intérêt"] += 1
         elif scoring.too_small_to_print(f.width, f.height, kind):
