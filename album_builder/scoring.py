@@ -47,6 +47,8 @@ class Weights:
     frontal: float = 0.06             # regarde vers l'objectif
     exposure: float = 0.07
     resolution: float = 0.06          # assez grande pour un tirage
+    beauty: float = 0.18              # œil d'éditeur : composition, lumière, sujet clair (CLIP)
+    emotion: float = 0.12             # œil d'éditeur : joie, tendresse, regard (CLIP)
     bonus: float = 0.16
 
 
@@ -234,6 +236,10 @@ def local_score(
         "exposure": exposure_score(feat["mean"], feat["clip_low"], feat["clip_high"]),
         "resolution": resolution,
     }
+    editor = meta.get("editor") or {}
+    for k in ("beauty", "emotion"):
+        if k in editor:
+            parts[k] = float(editor[k])
     w = {k: getattr(weights, k) for k in parts}
     if bonus_labels:
         parts["bonus"] = sum(1 for b in bonus_labels if b in labels) / len(bonus_labels)

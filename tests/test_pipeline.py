@@ -131,3 +131,44 @@ class PipelineWithPeopleTests(unittest.TestCase):
             self.assertTrue(plan["photos"])
             # la référence a reçu la date de la photo analysée qui lui ressemble
             self.assertTrue(people.photo_dates(refs)["Eydel"])
+
+
+class FakeJudge:
+    def judge(self, img):
+        return {"beauty": 0.5, "emotion": 0.5, "not_album": 0.9 if img.mean() > 127.5 else 0.1}
+
+
+@unittest.skipIf(cv2 is None, "OpenCV non installé")
+class PipelineEditorTests(unittest.TestCase):
+    def test_editor_eye_rejects_and_caches(self):
+        from album_builder import aesthetic, cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            client = FakeClient(PipelineTests().make_files())
+            argv = ["--name", "Oeil", "--count", "10", "--folder", "A" * 12, "--year", "2026",
+                    "--workdir", str(tmp), "--out", str(tmp / "out")]
+            with mock.patch.object(cli, "_client", return_value=client), \
+                 mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()), \
+                 mock.patch.object(aesthetic, "load_judge", return_value=FakeJudge()) as load:
+                cli.main(argv)
+                editor = json.loads((tmp / ".cache" / "editor.json").read_text(encoding="utf-8"))
+                self.assertEqual(len(editor), 60)
+                cli.main(argv)  # deuxième fois : tout est en cache, le modèle n'est pas rechargé
+                self.assertEqual(load.call_count, 1)
+            plan = json.loads(next((tmp / "out").rglob("plan.json")).read_text(encoding="utf-8"))
+            self.assertTrue(plan["photos"])
+
+    def test_without_model_album_still_works(self):
+        from album_builder import aesthetic, cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            client = FakeClient(PipelineTests().make_files())
+            argv = ["--name", "Sans", "--count", "10", "--folder", "A" * 12, "--year", "2026",
+                    "--workdir", str(tmp), "--out", str(tmp / "out")]
+            with mock.patch.object(cli, "_client", return_value=client), \
+                 mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()), \
+                 mock.patch.object(aesthetic, "load_judge", return_value=None):
+                cli.main(argv)
+            self.assertTrue(list((tmp / "out").rglob("plan.json")))

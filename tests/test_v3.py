@@ -221,3 +221,27 @@ class AgeMatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = people.save_face(Path(d), "Eydel", b"jpg", date(2021, 7, 20))
             self.assertEqual(people.photo_dates(Path(d)), {"Eydel": {p.name: date(2021, 7, 20)}})
+
+
+class EditorEyeTests(unittest.TestCase):
+    def test_judge_vector_prefers_matching_description(self):
+        import numpy as np
+        from album_builder import aesthetic
+        pos, neg = np.array([[1.0, 0.0]]), np.array([[0.0, 1.0]])
+        scores = aesthetic.judge_vector(np.array([0.9, 0.1]), {"beauty": (pos, neg)})
+        self.assertGreater(scores["beauty"], 0.99)
+
+    def test_letterbox_keeps_whole_image(self):
+        import numpy as np
+        from album_builder import aesthetic
+        x = aesthetic.letterbox(np.zeros((640, 360, 3), dtype=np.uint8))
+        self.assertEqual(x.shape, (1, 3, 224, 224))
+
+    def test_editor_scores_change_ranking(self):
+        f = feat(faces=[face()])
+        dull, _ = scoring.local_score(f, set(), [], meta={"editor": {"beauty": 0.1, "emotion": 0.1}})
+        nice, parts = scoring.local_score(f, set(), [], meta={"editor": {"beauty": 0.9, "emotion": 0.9}})
+        self.assertGreater(nice, dull + 0.1)
+        self.assertIn("beauty", parts)
+        plain, parts = scoring.local_score(f, set(), [])
+        self.assertNotIn("beauty", parts)
