@@ -46,7 +46,7 @@ Plus tu relis, plus les albums suivants te demanderont de corrections.
 - Si un enfant n'est pas reconnu, ouvre **« Qui est sur tes photos ? »** et mets son prénom sous
   son visage, surtout pour les photos récentes : les enfants changent vite.
 - Les photos de **Google Photos** restent en **aperçu** : Google ne permet pas de les ranger
-  dans un album Drive. Mets-les d'abord dans Drive.
+  dans un album Drive. Tu peux quand même relire la sélection pour voir ce qu'Albumia choisit.
 
 ## Ça ne marche pas ?
 
