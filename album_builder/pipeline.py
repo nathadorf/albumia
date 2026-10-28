@@ -287,11 +287,16 @@ def build_plan(
     refs_by_month: dict = {}
     all_parts: dict[str, dict] = {}
     cands: list[scoring.Candidate] = []
-    banned = taste.excluded(workdir)
-    # les photos retirées, par jour : une quasi-jumelle (même série) ne doit pas revenir à leur place
+    reasons = taste.excluded_reasons(workdir)
+    banned = set(reasons)
+    kept = set(taste.load_examples(workdir)["pos"])  # gardées à une relecture : jamais écartées par ressemblance
+    # les photos retirées « pas belle » / « goût », par jour : leur quasi-jumelle (même série) ne revient
+    # pas à leur place. Pas pour un « doublon » : sa jumelle est justement la photo qu'on a gardée.
     by_id = {f.id: f for f in files}
     banned_vecs: dict = {}
-    for fid in banned:
+    for fid, why in reasons.items():
+        if why == "doublon":
+            continue
         vec = (editor.get(fid) or {}).get("vec")
         if vec and fid in by_id:
             banned_vecs.setdefault(by_id[fid].when.date(), []).append((by_id[fid].name, vec))
@@ -331,7 +336,7 @@ def build_plan(
         must_faces = [x for x, label in zip(faces, per_face) if label in params.must]
         area = float(feat["w"] * feat["h"]) or 1.0
         twins = banned_vecs.get(f.when.date())
-        if twins and c.meta["vec"] and any(
+        if twins and c.meta["vec"] and f.id not in kept and any(
                 scoring.same_series(name, f.name, float(np.dot(v, c.meta["vec"]))) for name, v in twins):
             rejected["comme une photo retirée"] += 1
         elif kind == "capture":

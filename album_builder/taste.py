@@ -154,30 +154,38 @@ def _excluded_path(workdir: Path) -> Path:
     return workdir / ".cache" / "excluded.json"
 
 
-def excluded(workdir: Path) -> set[str]:
+def excluded_reasons(workdir: Path) -> dict[str, str]:
+    """{photo retirée: raison} (« pas-belle », « gout » ou « doublon »)."""
     try:
-        return set(json.loads(_excluded_path(workdir).read_text(encoding="utf-8")))
+        data = json.loads(_excluded_path(workdir).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return set()
+        return {}
+    if isinstance(data, list):  # ancien format : une simple liste
+        return {fid: "pas-belle" for fid in data}
+    return dict(data)
 
 
-def _write_excluded(workdir: Path, ids: set[str]) -> None:
+def excluded(workdir: Path) -> set[str]:
+    return set(excluded_reasons(workdir))
+
+
+def _write_excluded(workdir: Path, reasons: dict[str, str]) -> None:
     path = _excluded_path(workdir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+    path.write_text(json.dumps(reasons, sort_keys=True), encoding="utf-8")
 
 
-def exclude(workdir: Path, ids: list[str]) -> None:
-    """Une photo retirée pour « pas belle » ou « je ne l'aime pas » ne revient plus dans les albums."""
+def exclude(workdir: Path, ids: list[str], reason: str = "pas-belle") -> None:
+    """Une photo retirée (pas belle, je ne l'aime pas, doublon) ne revient plus dans les albums."""
     if ids:
-        _write_excluded(workdir, excluded(workdir) | set(ids))
+        _write_excluded(workdir, {**excluded_reasons(workdir), **{i: reason for i in ids}})
 
 
 def unexclude(workdir: Path, ids: list[str]) -> None:
     """« Annuler » après un retrait : la photo redevient possible (et n'est plus un contre-exemple)."""
     if not ids:
         return
-    _write_excluded(workdir, excluded(workdir) - set(ids))
+    _write_excluded(workdir, {k: v for k, v in excluded_reasons(workdir).items() if k not in set(ids)})
     ex = load_examples(workdir)
     for fid in ids:
         ex["neg"].pop(fid, None)
@@ -190,13 +198,14 @@ def main(argv=None) -> None:
     p.add_argument("--seed", metavar="PLAN_JSON", help="Ajoute une sélection faite à la main comme exemples")
     p.add_argument("--eval", action="store_true", help="Validation croisée (AUC) et critères qui comptent")
     p.add_argument("--exclude", nargs="+", metavar="FILE_ID", help="Retire ces photos des albums pour de bon")
+    p.add_argument("--reason", default="pas-belle", choices=("pas-belle", "gout", "doublon"))
     args = p.parse_args(argv)
     workdir = Path(args.workdir)
     if args.seed:
         n_pos, n_neg = seed_from_plan(workdir, Path(args.seed))
         print(f"{n_pos} photos aimées, {n_neg} moins aimées ajoutées.")
     if args.exclude:
-        exclude(workdir, args.exclude)
+        exclude(workdir, args.exclude, args.reason)
         print(f"{len(args.exclude)} photo(s) retirée(s) pour de bon.")
     if args.eval:
         try:

@@ -498,8 +498,11 @@ def save_review(slug):
               if r.get("reason") in EXCLUDE_REASONS}
     disliked = {r["id"] for r in removed if r["reason"] in DISLIKE_REASONS}
     gone = {r["id"] for r in removed if r["reason"] in EXCLUDE_REASONS}
-    taste.add_examples(ROOT, [], sorted(disliked), parts={i: known[i].get("parts", {}) for i in disliked})
-    taste.exclude(ROOT, sorted(gone))
+    # relecture : les photos laissées dans l'album sont aimées, les retirées (pas belle, goût) non
+    taste.add_examples(ROOT, ids, sorted(disliked), parts={i: known[i].get("parts", {}) for i in ids + sorted(disliked)})
+    for r in removed:
+        if r["reason"] in EXCLUDE_REASONS:
+            taste.exclude(ROOT, [r["id"]], r["reason"])
     taste.unexclude(ROOT, sorted(before - gone))  # « Annuler » après un ✕
     plan["review"] = {"ids": ids, "removed": removed}
     plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -552,7 +555,9 @@ def apply():
         disliked = [r["id"] for r in removed if r["reason"] in DISLIKE_REASONS]
         taste.add_examples(ROOT, [p["id"] for p in photos], disliked,
                            parts={p["id"]: p.get("parts", {}) for p in photos + removed})
-        taste.exclude(ROOT, [r["id"] for r in removed if r["reason"] in EXCLUDE_REASONS])
+        for r in removed:
+            if r["reason"] in EXCLUDE_REASONS:
+                taste.exclude(ROOT, [r["id"]], r["reason"])
         plan.update(album_name=name, photos=photos, drive_url=url)
         plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"url": url, "count": len(photos), "name": name}

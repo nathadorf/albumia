@@ -396,4 +396,27 @@ class SeriesTests(unittest.TestCase):
         self.assertIsNone(scoring.file_number("photo.jpg"))
         self.assertTrue(scoring.same_series("IMG_0235.JPG", "IMG_0238.JPG", 0.82))
         self.assertFalse(scoring.same_series("IMG_0235.JPG", "IMG_0298.JPG", 0.82))
-        self.assertTrue(scoring.same_series("A.jpg", "B.jpg", 0.86))
+        self.assertTrue(scoring.same_series("A.jpg", "B.jpg", 0.91))
+        self.assertFalse(scoring.same_series("A.jpg", "B.jpg", 0.86))
+
+
+class ExclusionReasonTests(unittest.TestCase):
+    def test_reasons_kept_and_old_format_read(self):
+        import json
+        from album_builder import taste
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".cache").mkdir()
+            (Path(d) / ".cache" / "excluded.json").write_text(json.dumps(["old"]))
+            taste.exclude(Path(d), ["twin"], "doublon")
+            self.assertEqual(taste.excluded_reasons(Path(d)), {"old": "pas-belle", "twin": "doublon"})
+            taste.unexclude(Path(d), ["twin"])
+            self.assertEqual(taste.excluded(Path(d)), {"old"})
+
+    def test_dedupe_works_when_some_vectors_missing(self):
+        import numpy as np
+        t = datetime(2023, 10, 12, 10)
+        a, b = cand(1, t, 0.9, dhash=h(1)), cand(2, t + timedelta(minutes=2), 0.8, dhash=h(2))
+        a.meta = {"vec": [1.0, 0.0]}
+        b.meta = {"vec": (np.array([1.0, 0.4]) / np.linalg.norm([1.0, 0.4])).tolist()}   # cos 0,93
+        lone = cand(3, t + timedelta(minutes=5), 0.7, dhash=h(3))   # sans vecteur
+        self.assertEqual({c.file_id for c in scoring.dedupe_bursts([a, b, lone])}, {"id1", "id3"})

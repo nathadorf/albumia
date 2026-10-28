@@ -32,8 +32,9 @@ PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image 
 SELFIE_PENALTY = 0.15             # quelqu'un d'autre (papa en selfie) au premier plan
 SAME_CONTENT_COS = (0.80, 0.95)   # CLIP : 0,80 = scène voisine, 0,95 = même scène (autre angle)
 SAME_SCENE_DUPLICATE = 0.88       # CLIP, photos à moins de 15 min : doublon (ses paires gardées : ≤ 0,84)
-SAME_SERIES_COS = 0.85            # CLIP, même jour qu'une photo retirée : sa jumelle ne revient pas
+SAME_SERIES_COS = 0.90            # CLIP, même jour qu'une photo retirée « pas belle » : sa jumelle ne revient pas
 SAME_SERIES_NAMED_COS = 0.80      # … ou 0,80 si les numéros de fichier se suivent (IMG_0235 / IMG_0238)
+                                  # (jamais pour un « doublon » : sa jumelle est la photo qu'on a gardée)
 SAME_SERIES_GAP = 5
 ROUTINE_MAX = None                # plafond de routine : désactivé, le type de scène CLIP se trompe trop
                                   # (le biberon sur le canapé classé « repas », le turban « bain »)
@@ -338,10 +339,12 @@ def dedupe_bursts(
             for k in np.nonzero(dup)[0]:
                 union(i + 1 + int(k), i)
 
-        vecs = [c.meta.get("vec") for c in ordered]
-        if all(vecs):
-            V = np.asarray(vecs, dtype=float)
-            for i in range(n - 1):
+        has = [i for i, c in enumerate(ordered) if c.meta.get("vec")]  # sans vecteur : règle ignorée
+        if has:
+            V = np.zeros((n, len(ordered[has[0]].meta["vec"])))
+            for i in has:
+                V[i] = ordered[i].meta["vec"]
+            for i in has:
                 close = np.nonzero((times[i + 1 :] - times[i]) <= window_seconds)[0]
                 if len(close):
                     sims = V[i + 1 + close] @ V[i]
