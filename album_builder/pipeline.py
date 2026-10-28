@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import aesthetic, compose, intent, people, scoring, taste, vision
+from . import aesthetic, compose, intent, people, scenes, scoring, taste, vision
 from .errors import AlbumError, Cancelled
 from .report import slugify, write_plan
 
@@ -109,31 +109,14 @@ def is_selfie(faces, per_face, births, when, feat) -> bool:
     return False
 
 
-# ce qui n'est pas un souvenir de famille, même avec un visage dessus (affiche, écran, publicité)
-OBJECT_PROMPTS = [
-    "an advertisement poster on a wall", "a photo of a phone screen or a computer screen",
-    "a banner or a sign with text", "a supermarket shelf with products",
-    "an empty room or a corridor", "a city street with buildings and a tram", "a fridge door with magnets",
-    "a restaurant menu", "a projection screen in a hall",
-]
-PEOPLE_PROMPTS = ["a photo of a child", "a family photo", "a baby", "children playing", "a portrait of a person"]
-OBJECT_MARGIN = 0.02
-
-
-def object_photos(files, editor, model_dir: Path, rep) -> set[str]:
-    """Photos qui ressemblent nettement plus à un objet ou un décor qu'à des gens."""
-    vecs = {f.id: (editor.get(f.id) or {}).get("vec") for f in files}
-    vecs = {k: v for k, v in vecs.items() if v}
-    if not vecs:
-        return set()
-    obj = [aesthetic.theme_vector(model_dir, x, rep.note) for x in OBJECT_PROMPTS]
-    ppl = [aesthetic.theme_vector(model_dir, x, rep.note) for x in PEOPLE_PROMPTS]
-    if any(v is None for v in obj + ppl):
-        return set()
-    ids = list(vecs)
-    mat = np.asarray([vecs[i] for i in ids], dtype=float)
-    gap = (mat @ np.vstack(obj).T).max(axis=1) - (mat @ np.vstack(ppl).T).max(axis=1)
-    return {fid for fid, g in zip(ids, gap) if g > OBJECT_MARGIN}
+def previous_review(out_dir: Path) -> tuple[set[str], set[str]]:
+    """(photos gardées, photos retirées pour « pas les bonnes personnes ») à la dernière relecture."""
+    try:
+        review = json.loads((out_dir / "plan.json").read_text(encoding="utf-8")).get("review") or {}
+    except (OSError, ValueError):
+        return set(), set()
+    removed = {r["id"] for r in review.get("removed", []) if r.get("reason") == "personnes"}
+    return set(review.get("ids", [])) - removed, removed
 
 
 def must_missing(must, labels, known, per_face) -> bool:
@@ -390,12 +373,18 @@ def build_plan(
     ref_sets = {n: [(e, dates.get(n, {}).get(photo)) for photo, e in v] for n, v in ref_photos.items()}
     refs_by_month: dict = {}
     themed = album_theme(params, files, editor, model_dir, rep)
-    objects = object_photos(files, editor, model_dir, rep) if wanted else set()
+    described = scenes.describe_all({f.id: (editor.get(f.id) or {}).get("vec") for f in files}, model_dir, rep.note)
+    examples = taste.load_examples(workdir)
+    liked_scene = scenes.interest(examples, {k: v[0] for k, v in described.items()})
     all_parts: dict[str, dict] = {}
     cands: list[scoring.Candidate] = []
     reasons = taste.excluded_reasons(workdir)
     banned = set(reasons)
-    kept = set(taste.load_examples(workdir)["pos"])  # gardées à une relecture : jamais écartées par ressemblance
+    kept = set(examples["pos"])  # gardées à une relecture : jamais écartées par ressemblance
+    # relecture précédente de ce même album : les photos gardées reviennent, celles retirées
+    # pour « pas les bonnes personnes » non (elles restent possibles dans d'autres albums)
+    pinned, banned_here = previous_review(out_root / slugify(params.name))
+    banned |= banned_here
     # les photos retirées « pas belle » / « goût », par jour : leur quasi-jumelle (même série) ne revient
     # pas à leur place. Pas pour un « doublon » : sa jumelle est justement la photo qu'on a gardée.
     by_id = {f.id: f for f in files}
@@ -406,7 +395,7 @@ def build_plan(
         vec = (editor.get(fid) or {}).get("vec")
         if vec and fid in by_id:
             banned_vecs.setdefault(by_id[fid].when.date(), []).append((by_id[fid].name, vec))
-    rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "objet ou décor": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
+    rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "sans intérêt": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0, "personne de la famille": 0, "hors thème": 0}
     for f in files:
         entry = cache.get(f.id)
@@ -435,23 +424,33 @@ def build_plan(
                   "scene": (editor.get(f.id) or {}).get("scene"),
                   "shot": scoring.shot_type(feat, focus or faces),
                   "selfie": is_selfie(faces, per_face, births, f.when.date(), feat)}
+        scene, dull = described.get(f.id, ("", False))
+        c.meta["meal"] = scenes.KIND.get(scene) == scenes.MEAL
+        c.note = scene
         c.local_score, c.parts = scoring.local_score(
             feat, labels, params.bonus, params.weights, per_face, wanted, c.meta
         )
+        if scene:
+            c.parts["scene"] = liked_scene[scene]
+            c.local_score = (1 - scenes.WEIGHT) * c.local_score + scenes.WEIGHT * c.parts["scene"]
         c.score = c.local_score
         all_parts[f.id] = c.parts
         must_faces = [x for x, label in zip(faces, per_face) if label in params.must]
         area = float(feat["w"] * feat["h"]) or 1.0
+        family_close = any(label in (wanted or refs) and x["box"][2] * x["box"][3] / area >= scenes.FAMILY_FACE_AREA
+                           for x, label in zip(faces, per_face))
         twins = banned_vecs.get(f.when.date())
-        if twins and c.meta["vec"] and f.id not in kept and any(
+        if f.id in pinned:
+            cands.append(c)
+        elif twins and c.meta["vec"] and f.id not in kept and any(
                 scoring.same_series(name, f.name, float(np.dot(v, c.meta["vec"]))) for name, v in twins):
             rejected["comme une photo retirée"] += 1
         elif kind == "capture":
             rejected["pas une photo"] += 1
         elif (c.meta["editor"] or {}).get("not_album", 0) > aesthetic.NOT_ALBUM_REJECT:
             rejected["pas pour un album"] += 1
-        elif f.id in objects and not labels & set(wanted) and not themed.get(f.id, (0, False))[1]:
-            rejected["objet ou décor"] += 1
+        elif dull and not family_close and f.id not in kept and not themed.get(f.id, (0, False))[1]:
+            rejected["sans intérêt"] += 1
         elif scoring.too_small_to_print(f.width, f.height, kind):
             rejected["trop petite pour l'impression"] += 1
         elif c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
@@ -495,7 +494,11 @@ def build_plan(
         raise AlbumError("Aucune photo ne passe les filtres (trop floues ou sans visage).", code="no_match")
 
     pool = scoring.dedupe_bursts(cands)
+    kept_ids = {c.file_id for c in pool}
+    pool += [c for c in cands if c.file_id in pinned and c.file_id not in kept_ids]  # jamais « doublon »
     rep.note(f"{len(pool)} après suppression des rafales.")
+    if pinned:
+        rep.note(f"{len(pinned & {c.file_id for c in pool})} photos gardées à ta relecture reprises.")
 
     if params.use_claude:
         from .claude_rerank import rerank
@@ -520,7 +523,8 @@ def build_plan(
     family = list(dict.fromkeys(params.must + params.bonus)) if params.family else None
     decor = scoring.DECOR_MAX_SHARE if wanted else None  # album de personnes : peu de décor
     selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor, family=family,
-                                     decor_max=decor, selfie_max=scoring.SELFIE_MAX if wanted else None)
+                                     decor_max=decor, selfie_max=scoring.SELFIE_MAX if wanted else None,
+                                     meal_max=scenes.MEAL_MAX, pinned=pinned)
     if len(selected) < params.count and params.theme_strict and themed:
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:

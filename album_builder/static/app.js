@@ -677,6 +677,7 @@ function renderReview(freshId) {
     },
       el("img", { src: thumb(p), alt: p.name, loading: "lazy" }),
       p.starred ? el("span", { class: "star", title: "Étoilée dans Drive" }, "★") : null,
+      tileCaption(p),
       el("button", { type: "button", class: "x", title: "Retirer cette photo", onclick: (e) => { e.stopPropagation(); askReason(p, e.currentTarget); } }, "✕"),
       el("button", { type: "button", class: "swap", title: "Voir d'autres photos de ce moment", onclick: (e) => { e.stopPropagation(); showAlternatives(p, e.currentTarget); } }, "⇄"),
     ))));
@@ -684,6 +685,12 @@ function renderReview(freshId) {
   const n = state.photos.length;
   $("#r-count").textContent = `${n} photo${n > 1 ? "s" : ""}`;
   $("#btn-apply").disabled = n === 0;
+}
+
+// ce que montre la photo, et qui est dessus : on voit pourquoi elle a été choisie
+function tileCaption(p) {
+  const text = [...(p.people || []), p.note].filter(Boolean).join(" · ");
+  return text ? el("span", { class: "caption" }, text) : null;
 }
 
 // --- petite fenêtre accrochée à une photo (raison du retrait, autres photos du moment)

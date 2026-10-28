@@ -654,7 +654,8 @@ class _Diversity:
 
 def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25,
                   floor: float | None = None, family: list[str] | None = None,
-                  decor_max: float | None = None, selfie_max: int | None = None) -> list[Candidate]:
+                  decor_max: float | None = None, selfie_max: int | None = None,
+                  meal_max: int | None = None, pinned: set[str] | None = None) -> list[Candidate]:
     """Choisit n photos qui racontent la période.
 
     1. Les places sont réparties entre les périodes (mois, ou tranches d'âge avec `bucket`).
@@ -665,10 +666,13 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
        période, ou reste vide (un album plus court vaut mieux qu'une photo ratée).
     5. Avec `family`, chacun est assez présent et personne n'envahit l'album.
     6. Avec `decor_max`, les photos sans personne ne dépassent pas cette part de l'album.
-    7. Avec `selfie_max`, au plus ce nombre de selfies (meta["selfie"]).
+    7. Avec `selfie_max`, au plus ce nombre de selfies (meta["selfie"]) ; avec `meal_max`, au plus
+       ce nombre de repas (meta["meal"]).
+    8. Les photos `pinned` (gardées à la relecture de ce même album) sont prises d'abord.
     """
+    pinned = pinned or set()
     if floor is not None:
-        items = [c for c in items if c.score >= floor]
+        items = [c for c in items if c.score >= floor or c.file_id in pinned]
     if not items:
         return []
     div = _Diversity(items, diversity, family)
@@ -679,19 +683,30 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
     decor_left = [max(1, int(n * decor_max)) if decor_max is not None else len(items)]
     selfie = np.array([bool(c.meta.get("selfie")) for c in items])
     selfie_left = [selfie_max if selfie_max is not None else len(items)]
+    meal = np.array([bool(c.meta.get("meal")) for c in items])
+    meal_left = [meal_max if meal_max is not None else len(items)]
+
+    def take(best: int) -> None:
+        taken[best] = True
+        div.add(best)
+        decor_left[0] -= int(decor[best])
+        selfie_left[0] -= int(selfie[best])
+        meal_left[0] -= int(meal[best])
 
     def pick(rows: list[int]) -> int | None:
         if decor_left[0] <= 0:
             rows = [r for r in rows if not decor[r]]
         if selfie_left[0] <= 0:
             rows = [r for r in rows if not selfie[r]]
+        if meal_left[0] <= 0:
+            rows = [r for r in rows if not meal[r]]
         if not rows:
             return None
         gain = scores[rows] - div.penalty(rows)
-        best = rows[int(np.argmax(gain))]
-        decor_left[0] -= int(decor[best])
-        selfie_left[0] -= int(selfie[best])
-        return best
+        return rows[int(np.argmax(gain))]
+
+    for r in sorted((i for i, c in enumerate(items) if c.file_id in pinned), key=lambda i: -scores[i])[:n]:
+        take(r)
 
     bucket = bucket or (lambda c: (c.when.year, c.when.month))
     groups: dict = {}
@@ -708,13 +723,16 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
             left = {i: len(m) for i, m in enumerate(ms)}
         moment_of = {index[id(c)]: i for i, m in enumerate(ms) for c in m}
         pool = [index[id(c)] for c in groups[key]]
-        for _ in range(quota):
+        for r in pool:  # les photos épinglées comptent dans le quota de leur période et de leur moment
+            if taken[r]:
+                quota -= 1
+                left[moment_of[r]] -= 1
+        for _ in range(max(0, quota)):
             open_ = [r for r in pool if not taken[r] and left[moment_of[r]] > 0]
             best = pick(open_) if open_ else None
             if best is None:
                 break
-            taken[best] = True
-            div.add(best)
+            take(best)
             left[moment_of[best]] -= 1
     if taken.sum() < n:  # places libres : les meilleures restantes, toutes périodes
         while taken.sum() < n:
@@ -722,6 +740,5 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
             best = pick(rest) if rest else None
             if best is None:
                 break
-            taken[best] = True
-            div.add(best)
+            take(best)
     return sorted((items[i] for i in np.nonzero(taken)[0]), key=lambda c: c.when)

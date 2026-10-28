@@ -22,7 +22,7 @@ import numpy as np
 
 FEATURES = ("sharpness", "faces", "smile", "eyes", "frontal", "exposure", "resolution",
             "beauty", "emotion", "placement", "headroom", "clean", "attention", "level",
-            "color", "contrast", "other_first")
+            "color", "contrast", "other_first", "scene")
 MIN_EXAMPLES = 8   # par classe, avant de faire confiance au goût appris
 L2 = 1.0           # régularisation : peu d'exemples, on reste prudent
 MIN_AUC = 0.70     # le goût ne compte que s'il prédit mieux que le critère « émotion » seul
