@@ -110,6 +110,11 @@ def cmd_apply(args) -> None:
 
 
 def main(argv=None) -> None:
+    for stream in (sys.stdout, sys.stderr):  # console Windows (cp1252) : pas d'erreur sur « → »
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     args = parse_args(argv)
     try:
         if args.apply_plan:

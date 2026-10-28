@@ -245,3 +245,44 @@ class EditorEyeTests(unittest.TestCase):
         self.assertIn("beauty", parts)
         plain, parts = scoring.local_score(f, set(), [])
         self.assertNotIn("beauty", parts)
+
+
+class TasteTests(unittest.TestCase):
+    def data(self, n=40, seed=0):
+        import numpy as np
+        rng = np.random.default_rng(seed)
+        editor, pos, neg = {}, [], []
+        for i in range(n):
+            liked = i % 2 == 0
+            v = rng.normal(size=16) + (2.0 if liked else -2.0) * np.eye(16)[0]
+            editor[f"p{i}"] = {"vec": (v / np.linalg.norm(v)).tolist()}
+            (pos if liked else neg).append(f"p{i}")
+        return editor, pos, neg
+
+    def test_learns_and_generalises(self):
+        from album_builder import taste
+        editor, pos, neg = self.data()
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), pos, neg)
+            self.assertGreater(taste.cross_val_auc(editor, taste.load_examples(Path(d))), 0.85)
+            m = taste.model_for(Path(d), editor)
+            self.assertGreater(m.predict(editor[pos[0]]["vec"]), m.predict(editor[neg[0]]["vec"]))
+
+    def test_needs_enough_examples_and_last_opinion_wins(self):
+        from album_builder import taste
+        editor, pos, neg = self.data()
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), pos[:3], neg[:3])
+            self.assertIsNone(taste.model_for(Path(d), editor))
+            taste.add_examples(Path(d), [], [pos[0]])
+            ex = taste.load_examples(Path(d))
+            self.assertIn(pos[0], ex["neg"])
+            self.assertNotIn(pos[0], ex["pos"])
+
+    def test_seed_from_plan(self):
+        import json
+        from album_builder import taste
+        with tempfile.TemporaryDirectory() as d:
+            plan = Path(d) / "plan.json"
+            plan.write_text(json.dumps({"photos": [{"id": "a"}], "reserve": [{"id": "b"}, {"id": "c"}]}))
+            self.assertEqual(taste.seed_from_plan(Path(d), plan), (1, 2))

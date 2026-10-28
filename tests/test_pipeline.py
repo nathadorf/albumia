@@ -135,7 +135,11 @@ class PipelineWithPeopleTests(unittest.TestCase):
 
 class FakeJudge:
     def judge(self, img):
-        return {"beauty": 0.5, "emotion": 0.5, "not_album": 0.9 if img.mean() > 127.5 else 0.1}
+        return {"beauty": 0.5, "emotion": 0.5, "not_album": 0.99 if img.mean() > 127.6 else 0.1}
+
+    def judge_with_vector(self, img):
+        v = np.array([img.mean(), img.std(), 1.0])
+        return self.judge(img), (v / np.linalg.norm(v)).round(4).tolist()
 
 
 @unittest.skipIf(cv2 is None, "OpenCV non installé")

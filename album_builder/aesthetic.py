@@ -27,7 +27,7 @@ FILES = {
 }
 MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
 STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
-VERSION = 1  # à changer si les descriptions ci-dessous changent
+VERSION = 2  # à changer si les descriptions ci-dessous changent (2 : vecteur image gardé pour le goût)
 
 # critère -> (descriptions positives, descriptions négatives)
 CRITERIA = {
@@ -56,7 +56,7 @@ CRITERIA = {
         ["a family photo", "a photo of a child"],
     ),
 }
-NOT_ALBUM_REJECT = 0.75   # au-delà : photo d'écran, photo de photo, pot… écartée
+NOT_ALBUM_REJECT = 0.97   # au-delà : photo d'écran, pot… écartée (plus bas, trop de belles photos partaient)
 
 
 class Judge:
@@ -108,6 +108,10 @@ class Judge:
 
     def judge(self, img_bgr: np.ndarray) -> dict[str, float]:
         return judge_vector(self.embed_image(img_bgr), self.text_vectors)
+
+    def judge_with_vector(self, img_bgr: np.ndarray) -> tuple[dict[str, float], list[float]]:
+        vec = self.embed_image(img_bgr)
+        return judge_vector(vec, self.text_vectors), [round(float(x), 4) for x in vec]
 
 
 def judge_vector(img_vec: np.ndarray, text_vectors: dict) -> dict[str, float]:

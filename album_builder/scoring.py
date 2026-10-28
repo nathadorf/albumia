@@ -49,6 +49,7 @@ class Weights:
     resolution: float = 0.06          # assez grande pour un tirage
     beauty: float = 0.18              # œil d'éditeur : composition, lumière, sujet clair (CLIP)
     emotion: float = 0.12             # œil d'éditeur : joie, tendresse, regard (CLIP)
+    taste: float = 0.30               # goût appris sur les photos gardées / retirées (CLIP)
     bonus: float = 0.16
 
 
@@ -237,7 +238,7 @@ def local_score(
         "resolution": resolution,
     }
     editor = meta.get("editor") or {}
-    for k in ("beauty", "emotion"):
+    for k in ("beauty", "emotion", "taste"):
         if k in editor:
             parts[k] = float(editor[k])
     w = {k: getattr(weights, k) for k in parts}

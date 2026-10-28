@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import aesthetic, people, scoring, vision
+from . import aesthetic, people, scoring, taste, vision
 from .errors import AlbumError, Cancelled
 from .report import slugify, write_plan
 
@@ -51,6 +51,15 @@ def date_references(ref_photos: dict, known: dict, cache: dict, min_sim: float =
     return out
 
 
+def _editor_scores(entry: dict | None, liked) -> dict | None:
+    if not entry:
+        return None
+    scores = dict(entry.get("scores") or {})
+    if liked and entry.get("vec"):
+        scores["taste"] = liked.predict(entry["vec"])
+    return scores
+
+
 def judge_photos(files, cache, thumbs_dir: Path, editor_path: Path, model_dir: Path, rep, cancel) -> dict:
     """Œil d'éditeur (beauté, émotion) sur chaque miniature, gardé en cache comme l'analyse."""
     editor = _load_cache(editor_path)
@@ -68,7 +77,8 @@ def judge_photos(files, cache, thumbs_dir: Path, editor_path: Path, model_dir: P
             break
         img = vision.imread(thumbs_dir / f"{f.id}.jpg")
         if img is not None:
-            editor[f.id] = {"mod": f.modified, "v": aesthetic.VERSION, "scores": judge.judge(img)}
+            scores, vec = judge.judge_with_vector(img)
+            editor[f.id] = {"mod": f.modified, "v": aesthetic.VERSION, "scores": scores, "vec": vec}
         if i % 200 == 0:
             _save_cache(editor_path, editor)
     _save_cache(editor_path, editor)
@@ -248,6 +258,9 @@ def build_plan(
     if failed:
         rep.note(f"{failed} photo(s) sans aperçu Drive, ignorées.")
     editor = judge_photos(files, cache, thumbs_dir, workdir / ".cache" / "editor.json", model_dir, rep, cancel)
+    liked = taste.model_for(workdir, editor)
+    if liked:
+        rep.note(f"Ton goût, appris sur {liked.size} photos gardées ou retirées, compte dans le choix.")
 
     rep.step(4, "Choix des meilleures photos…")
     for f in files:
@@ -284,7 +297,7 @@ def build_plan(
         c = scoring.Candidate(f.id, f.name, f.when, feat, labels)
         focus = [x for x, label in zip(faces, per_face) if label in wanted] if wanted else faces
         c.meta = {"starred": f.starred, "kind": kind, "width": f.width, "height": f.height,
-                  "editor": editor.get(f.id, {}).get("scores"),
+                  "editor": _editor_scores(editor.get(f.id), liked),
                   "shot": scoring.shot_type(feat, focus or faces)}
         c.local_score, c.parts = scoring.local_score(
             feat, labels, params.bonus, params.weights, per_face, wanted, c.meta

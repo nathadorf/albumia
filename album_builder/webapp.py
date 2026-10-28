@@ -17,7 +17,7 @@ from pathlib import Path
 from flask import Flask, abort, jsonify, request, send_from_directory
 from googleapiclient.errors import HttpError
 
-from . import intent, learn, people, pipeline, scoring
+from . import intent, learn, people, pipeline, scoring, taste
 from .errors import AlbumError, Cancelled
 from .report import slugify
 
@@ -523,6 +523,8 @@ def apply():
             raise AlbumError(f"Google Drive a refusé la création ({e.reason}).", code="drive")
         url = folder.get("webViewLink") or f"https://drive.google.com/drive/folders/{folder['id']}"
         learn.record(ROOT, name, photos, removed)
+        taste.add_examples(ROOT, [p["id"] for p in photos],
+                           [r["id"] for r in removed if r["reason"] in ("pas-belle", "gout")])
         plan.update(album_name=name, photos=photos, drive_url=url)
         plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"url": url, "count": len(photos), "name": name}
