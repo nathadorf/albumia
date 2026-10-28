@@ -457,3 +457,22 @@ class ThemeTests(unittest.TestCase):
         self.assertTrue(out["invite"][1])        # même journée que l'événement
         self.assertFalse(out["ailleurs"][1])     # même ressemblance, autre jour
         self.assertFalse(out["o0"][1])
+
+    def test_lookalike_and_missing_theme(self):
+        from datetime import date
+
+        from album_builder import scoring
+
+        t, empty_tub = np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])
+        def v(a, b):
+            return [a, b, float(np.sqrt(1 - a * a - b * b))]
+        vecs = {f"o{i}": v(0.20, 0.10) for i in range(10)}
+        vecs["bain"] = v(0.32, 0.10)
+        vecs["baignoire vide"] = v(0.31, 0.40)   # papa habillé dans la baignoire vide
+        days = dict.fromkeys(vecs, date(2026, 1, 1))
+        out = scoring.theme_scores(vecs, days, t, not_vec=empty_tub)
+        self.assertTrue(out["bain"][1])
+        self.assertFalse(out["baignoire vide"][1])
+        self.assertFalse(scoring.theme_found(vecs, t))  # 2 photos seulement : pas un vrai thème
+        vecs.update({f"b{i}": v(0.32, 0.10) for i in range(5)})
+        self.assertTrue(scoring.theme_found(vecs, t))

@@ -58,6 +58,15 @@ THEMES = {
     "lumiere": (r"lumiere|coucher de soleil|golden hour|soleil", "La lumière",
                 "a photo in warm golden sunset light", False),
 }
+# mesuré sur 501 vraies photos : dehors manquait des photos à 0,05 au-dessus de la médiane,
+# le bain gardait papa assis dans une baignoire vide. Écart au-dessus de la médiane du dossier :
+THEME_MARGIN = {"dehors": 0.04, "zoo": 0.04, "velo": 0.04, "repas": 0.04, "bain": 0.06, "neige": 0.06}
+# ce qui ressemble au thème sans en être : la photo doit ressembler plus au thème qu'à ça
+THEME_NOT = {
+    "bain": "an empty bathtub, an adult in a bathroom",
+    "neige": "a grey cloudy sky, autumn leaves",
+    "anniversaire": "a child playing with toys at home",
+}
 DEFAULT_COUNT = 50
 MAX_COUNT = 500
 

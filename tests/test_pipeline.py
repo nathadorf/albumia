@@ -169,7 +169,7 @@ class PipelineEditorTests(unittest.TestCase):
     def run_theme(self, tmp, scores=None):
         from album_builder import aesthetic, cli, scoring
 
-        def fake_scores(vecs, days, t):  # une photo sur deux est « dehors »
+        def fake_scores(vecs, days, t, **kw):  # une photo sur deux est « dehors »
             return {fid: ((0.9, True) if i % 2 else (0.1, False)) for i, fid in enumerate(sorted(vecs))}
 
         client = FakeClient(PipelineTests().make_files())
@@ -179,6 +179,7 @@ class PipelineEditorTests(unittest.TestCase):
              mock.patch("album_builder.vision.get_engine", return_value=FakeEngine()), \
              mock.patch.object(aesthetic, "load_judge", return_value=FakeJudge()), \
              mock.patch.object(aesthetic, "theme_vector", return_value=np.array([0.0, 1.0, 0.0])), \
+             mock.patch.object(scoring, "theme_found", return_value=True), \
              mock.patch.object(scoring, "theme_scores", side_effect=scores or fake_scores):
             cli.main(argv)
         return json.loads(next((tmp / "out").rglob("plan.json")).read_text(encoding="utf-8"))
@@ -193,7 +194,7 @@ class PipelineEditorTests(unittest.TestCase):
 
     def test_rare_strict_theme_becomes_a_preference(self):
         with tempfile.TemporaryDirectory() as tmp:
-            plan = self.run_theme(Path(tmp), scores=lambda vecs, days, t: {f: (0.2, False) for f in vecs})
+            plan = self.run_theme(Path(tmp), scores=lambda vecs, days, t, **kw: {f: (0.2, False) for f in vecs})
         self.assertFalse(plan["settings"]["theme_strict"])
         self.assertEqual(len(plan["photos"]), 10)
 

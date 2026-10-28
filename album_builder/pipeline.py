@@ -112,7 +112,15 @@ def album_theme(params, files, editor, model_dir: Path, rep) -> dict[str, tuple[
     if tvec is None:
         rep.note(f"Thème « {label} » non pris en compte : l'œil d'éditeur n'est pas disponible.")
         return {}
-    themed = scoring.theme_scores(vecs, {f.id: f.when.date() for f in files}, tvec)
+    if not scoring.theme_found(vecs, tvec):
+        rep.note(f"Je ne trouve pas de photos « {label} » dans ce dossier : thème ignoré.")
+        params.theme_strict = False
+        return {}
+    not_prompt = intent.THEME_NOT.get(params.theme)
+    not_vec = aesthetic.theme_vector(model_dir, not_prompt, rep.note) if not_prompt else None
+    themed = scoring.theme_scores(vecs, {f.id: f.when.date() for f in files}, tvec,
+                                  margin=intent.THEME_MARGIN.get(params.theme, scoring.THEME_STRICT_MARGIN),
+                                  not_vec=not_vec)
     inside = sum(1 for _, ok in themed.values() if ok)
     if params.theme_strict and inside < min(params.count, MIN_THEMED):
         rep.note(f"Seulement {inside} photo(s) sur le thème « {label} » : je les mets en avant "

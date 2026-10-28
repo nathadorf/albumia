@@ -490,21 +490,44 @@ THEME_STRICT_MARGIN = 0.05  # thème strict : au moins ça au-dessus de la médi
 THEME_EVENT_SHARE = 0.30    # une journée dont 30 % des photos sont dans le thème…
 THEME_EVENT_MIN = 3         # …(et au moins 3) : ses autres photos racontent le même moment
 THEME_WEIGHT = 0.25         # part du thème dans la note finale
+THEME_FOUND_MARGIN = 0.06   # un thème existe dans le dossier si au moins 5 photos sont
+THEME_FOUND_MIN = 5         # nettement au-dessus de la médiane (sinon : faux positifs)
 
 
-def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec) -> dict[str, tuple[float, bool]]:
+def _theme_sims(vecs, theme_vec):
+    ids = [i for i, v in vecs.items() if v]
+    if not ids:
+        return ids, np.zeros(0), np.zeros((0, 0))
+    mat = np.asarray([vecs[i] for i in ids], dtype=float)
+    return ids, mat @ np.asarray(theme_vec, dtype=float), mat
+
+
+def theme_found(vecs: dict[str, list[float]], theme_vec) -> bool:
+    """Le dossier contient-il vraiment ce thème ? (pas d'anniversaire : pas de faux gâteaux)"""
+    _, sims, _ = _theme_sims(vecs, theme_vec)
+    if not len(sims):
+        return False
+    return int((sims >= float(np.median(sims)) + THEME_FOUND_MARGIN).sum()) >= THEME_FOUND_MIN
+
+
+def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec,
+                 margin: float = THEME_STRICT_MARGIN, not_vec=None) -> dict[str, tuple[float, bool]]:
     """{photo: (note du thème de 0 à 1, dans le thème ?)}.
 
     « Dans le thème » : nettement au-dessus de la médiane, ou prise le jour d'un événement du thème
     (un anniversaire : le gâteau, mais aussi les invités et les cadeaux du même jour).
+    `not_vec` : ce qui ressemble au thème sans en être (une baignoire vide pour « bain »).
     """
-    ids = [i for i, v in vecs.items() if v]
+    ids, sims, mat = _theme_sims(vecs, theme_vec)
     if not ids:
         return {}
-    sims = np.asarray([vecs[i] for i in ids], dtype=float) @ np.asarray(theme_vec, dtype=float)
     med = float(np.median(sims))
     notes = 1.0 / (1.0 + np.exp(-(sims - med) / THEME_SPREAD))
-    strong = sims >= med + THEME_STRICT_MARGIN
+    strong = sims >= med + margin
+    if not_vec is not None:
+        lookalike = mat @ np.asarray(not_vec, dtype=float) > sims
+        strong &= ~lookalike
+        notes = np.where(lookalike, np.minimum(notes, 0.5), notes)
     per_day: dict = {}
     for i, fid in enumerate(ids):
         tot, hit = per_day.get(days.get(fid), (0, 0))
