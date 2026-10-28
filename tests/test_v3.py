@@ -387,3 +387,13 @@ class AlbumRulesTests(unittest.TestCase):
         cv2.line(tilt, (0, 150), (479, 200), 0, 3)
         cv2.line(tilt, (0, 250), (479, 300), 0, 3)
         self.assertLess(compose.level(tilt), 0.5)
+
+
+class SeriesTests(unittest.TestCase):
+    def test_file_numbers_and_series(self):
+        self.assertEqual(scoring.file_number("IMG_0238.JPG"), 238)
+        self.assertEqual(scoring.file_number("20210726_123722.jpg"), 123722)
+        self.assertIsNone(scoring.file_number("photo.jpg"))
+        self.assertTrue(scoring.same_series("IMG_0235.JPG", "IMG_0238.JPG", 0.82))
+        self.assertFalse(scoring.same_series("IMG_0235.JPG", "IMG_0298.JPG", 0.82))
+        self.assertTrue(scoring.same_series("A.jpg", "B.jpg", 0.86))

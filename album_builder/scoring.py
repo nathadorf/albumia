@@ -31,8 +31,10 @@ PRINT_MIN_SIDE = (800, 1500)      # côté court de l'original (px) : 0 → 1 de
 PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image de messagerie) : trop petite pour un album
 SELFIE_PENALTY = 0.15             # quelqu'un d'autre (papa en selfie) au premier plan
 SAME_CONTENT_COS = (0.80, 0.95)   # CLIP : 0,80 = scène voisine, 0,95 = même scène (autre angle)
-SAME_SCENE_DUPLICATE = 0.93       # CLIP, photos à moins de 15 min : doublon (canapé, poussette…)
-SAME_SERIES_COS = 0.92            # CLIP, même jour qu'une photo retirée : sa jumelle ne revient pas
+SAME_SCENE_DUPLICATE = 0.88       # CLIP, photos à moins de 15 min : doublon (ses paires gardées : ≤ 0,84)
+SAME_SERIES_COS = 0.85            # CLIP, même jour qu'une photo retirée : sa jumelle ne revient pas
+SAME_SERIES_NAMED_COS = 0.80      # … ou 0,80 si les numéros de fichier se suivent (IMG_0235 / IMG_0238)
+SAME_SERIES_GAP = 5
 ROUTINE_MAX = None                # plafond de routine : désactivé, le type de scène CLIP se trompe trop
                                   # (le biberon sur le canapé classé « repas », le turban « bain »)
 SAME_INSTANT_SECONDS = 600        # deux photos à moins de 10 min : même instant, on préfère varier
@@ -66,6 +68,19 @@ class Weights:
     color: float = 0.04               # couleurs vivantes (AUC 0,60)
     contrast: float = 0.0
     bonus: float = 0.16
+
+
+def file_number(name: str) -> int | None:
+    """Numéro de prise de vue dans le nom (IMG_0238.JPG → 238), pour repérer une série."""
+    m = re.search(r"(\d{3,})(?:\D*)$", re.sub(r"\.[^.]+$", "", name or ""))
+    return int(m.group(1)) if m else None
+
+
+def same_series(name_a: str, name_b: str, cos: float) -> bool:
+    if cos >= SAME_SERIES_COS:
+        return True
+    a, b = file_number(name_a), file_number(name_b)
+    return cos >= SAME_SERIES_NAMED_COS and a is not None and b is not None and abs(a - b) <= SAME_SERIES_GAP
 
 
 def photo_kind(name: str, camera: str = "", width: int | None = None, height: int | None = None) -> str:

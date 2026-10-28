@@ -294,7 +294,7 @@ def build_plan(
     for fid in banned:
         vec = (editor.get(fid) or {}).get("vec")
         if vec and fid in by_id:
-            banned_vecs.setdefault(by_id[fid].when.date(), []).append(vec)
+            banned_vecs.setdefault(by_id[fid].when.date(), []).append((by_id[fid].name, vec))
     rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0}
     for f in files:
@@ -331,7 +331,8 @@ def build_plan(
         must_faces = [x for x, label in zip(faces, per_face) if label in params.must]
         area = float(feat["w"] * feat["h"]) or 1.0
         twins = banned_vecs.get(f.when.date())
-        if twins and c.meta["vec"] and max(float(np.dot(v, c.meta["vec"])) for v in twins) >= scoring.SAME_SERIES_COS:
+        if twins and c.meta["vec"] and any(
+                scoring.same_series(name, f.name, float(np.dot(v, c.meta["vec"]))) for name, v in twins):
             rejected["comme une photo retirée"] += 1
         elif kind == "capture":
             rejected["pas une photo"] += 1
