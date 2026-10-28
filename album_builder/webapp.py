@@ -387,7 +387,8 @@ def face_groups():
         baby = None
         if vecs and all(v is not None for v in ages.values()):
             mean = np.mean(np.asarray(vecs, dtype=float), axis=0)
-            baby = float(mean @ ages["baby"]) > float(mean @ ages["older"])
+            gap = float(mean @ ages["baby"]) - float(mean @ ages["older"])
+            baby = True if gap > 0.01 else False if gap < -0.01 else None  # sinon : on ne sait pas
 
         def plausible(n):
             if n not in births or not when:
@@ -395,7 +396,7 @@ def face_groups():
             if births[n] > when:
                 return False
             months = scoring.months_between(births[n], when)
-            return baby is None or (months <= 15 if baby else months >= 9)
+            return baby is None or (months <= 15 if baby else months >= 6)
 
         options = sorted(((float(np.dot(c["center"], v)), n) for n, v in known.items() if plausible(n)), reverse=True)
         sure = options and options[0][0] >= 0.30 and (len(options) < 2 or options[0][0] - options[1][0] >= 0.05)

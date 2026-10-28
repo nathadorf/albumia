@@ -322,9 +322,13 @@ def build_plan(
     editor = judge_photos(files, cache, thumbs_dir, workdir / ".cache" / "editor.json", model_dir, rep, cancel)
 
     rep.step(4, "Choix des meilleures photos…")
+    dated = False
     for f in files:
-        if f.id in cache:
+        if f.id in cache and cache[f.id].get("when") != f.when.date().isoformat():
             cache[f.id]["when"] = f.when.date().isoformat()
+            dated = True
+    if dated:  # « Qui est sur tes photos ? » regroupe les visages par période
+        _save_cache(features_path, cache)
     dates = people.photo_dates(refs_dir)
     found = date_references(ref_photos, dates, cache)
     if found:
