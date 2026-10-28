@@ -1,4 +1,6 @@
 """Critères v3 : moments, variété, naissance, impression, apprentissage."""
+import random
+
 import numpy as np
 import tempfile
 import unittest
@@ -449,8 +451,8 @@ class ThemeTests(unittest.TestCase):
             vecs[f"o{i}"], days[f"o{i}"] = v(0.20), d2
         for i in range(4):   # anniversaire : gâteau bien visible…
             vecs[f"g{i}"], days[f"g{i}"] = v(0.30), d1
-        vecs["invite"], days["invite"] = v(0.21), d1  # …et un invité, le même jour
-        vecs["ailleurs"], days["ailleurs"] = v(0.21), d2
+        vecs["invite"], days["invite"] = v(0.23), d1  # …et un invité, le même jour
+        vecs["ailleurs"], days["ailleurs"] = v(0.23), d2
         out = scoring.theme_scores(vecs, days, t)
         self.assertTrue(out["g0"][1])
         self.assertGreater(out["g0"][0], 0.9)
@@ -476,3 +478,56 @@ class ThemeTests(unittest.TestCase):
         self.assertFalse(scoring.theme_found(vecs, t))  # 2 photos seulement : pas un vrai thème
         vecs.update({f"b{i}": v(0.32, 0.10) for i in range(5)})
         self.assertTrue(scoring.theme_found(vecs, t))
+
+
+class FamilyHolidayTests(unittest.TestCase):
+    FAMILY = ["Eydel", "Arié", "Hillel", "Perla", "Nathanaël"]
+    TODAY = date(2026, 10, 28)
+
+    def test_jewish_holidays_dates(self):
+        from album_builder.hebcal import holiday
+
+        self.assertEqual(holiday("souccot", 2025), (date(2025, 10, 2), date(2025, 10, 15)))
+        self.assertEqual(holiday("hanouka", 2025)[0], date(2025, 12, 14))
+        self.assertEqual(holiday("pessah", 2025)[0], date(2025, 4, 12))
+        self.assertEqual(holiday("pourim", 2024)[0], date(2024, 3, 23))
+        self.assertEqual(holiday("roch-hachana", 2025)[0], date(2025, 9, 22))
+        self.assertEqual(holiday("chavouot", 2025)[0], date(2025, 6, 1))
+
+    def test_family_album_wants_anyone_of_the_family(self):
+        it = interpret("Souccot 2025 en famille", self.FAMILY, today=self.TODAY)
+        self.assertEqual((it.date_from, it.date_to), ("2025-10-02", "2025-10-15"))
+        self.assertEqual(it.name, "Souccot 2025 en famille")
+        self.assertTrue(it.family)
+        self.assertEqual(it.must, [])
+        self.assertEqual(it.bonus, self.FAMILY)
+        self.assertEqual(it.theme, "souccot")
+        self.assertFalse(it.theme_strict)  # les dates suffisent
+
+        it = interpret("Eté 2025 en famille", self.FAMILY, selected=self.FAMILY, today=self.TODAY)
+        self.assertEqual(it.must, [])           # pas les 5 sur chaque photo
+        self.assertEqual(it.name, "Été 2025 en famille")
+
+    def test_holiday_without_year_is_the_last_one(self):
+        it = interpret("Hanouka", self.FAMILY, today=self.TODAY)
+        self.assertEqual(it.date_from, "2025-12-14")
+
+    def test_reference_taken_before_birth_is_ignored(self):
+        refs = scoring.refs_at({"Arié": [([1.0, 0.0], date(2021, 7, 14)), ([0.0, 1.0], date(2022, 11, 1))]},
+                               {"Arié": date(2022, 9, 9)}, date(2023, 6, 1))
+        self.assertAlmostEqual(refs["Arié"][1], 1.0)
+
+    def test_family_album_shares_places(self):
+        items = []
+        t0 = datetime(2025, 7, 1, 10)
+        for i in range(40):  # Eydel seule : les plus belles photos
+            items.append(cand(f"e{i}", t0 + timedelta(hours=3 * i), 0.9, dhash=format(random.Random(i).getrandbits(64), "016x")))
+            items[-1].labels = {"Eydel"}
+        for i in range(10):
+            items.append(cand(f"p{i}", t0 + timedelta(days=10, hours=3 * i), 0.8, dhash=format(random.Random(100 + i).getrandbits(64), "016x")))
+            items[-1].labels = {"Perla", "Arié"}
+        plain = scoring.select_spread(items, 20)
+        fam = scoring.select_spread(items, 20, family=["Eydel", "Arié", "Perla"])
+        others = lambda sel: sum(1 for c in sel if "Perla" in c.labels)
+        self.assertGreater(others(fam), others(plain))
+        self.assertGreaterEqual(others(fam), 3)

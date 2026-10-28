@@ -23,7 +23,18 @@ APPROX = {"dizaine": 10, "quinzaine": 15, "vingtaine": 20, "trentaine": 30, "qua
           "cinquantaine": 50, "soixantaine": 60, "centaine": 100}
 NUMBER_WORDS = {"dix": 10, "quinze": 15, "vingt": 20, "trente": 30, "quarante": 40, "cinquante": 50,
                 "soixante": 60, "cent": 100}
-TOGETHER = ("ensemble", "tous", "toutes", "reunis", "les deux", "les trois", "en famille")
+TOGETHER = ("ensemble", "tous", "toutes", "reunis", "les deux", "les trois")
+FAMILY = re.compile(r"(?<![a-z])(?:en famille|famille|tous les cinq|toute la tribu)(?![a-z])")
+# fêtes juives : leurs dates changent chaque année (calculées par hebcal)
+HOLIDAYS = {
+    "souccot": (r"souc+ot|souk+ot|sukkot|soucot|soukot", "Souccot"),
+    "hanouka": (r"hanouk+a|hanouc+a|chanouk+a|hanuk+ah?", "Hanouka"),
+    "pourim": (r"pourim", "Pourim"),
+    "pessah": (r"pessa[hc]h?|pesach|paque juive", "Pessah"),
+    "roch-hachana": (r"roch hach?ana|rosh hashana|nouvel an juif", "Roch Hachana"),
+    "kippour": (r"kippour|kipour", "Kippour"),
+    "chavouot": (r"chavouot|shavouot|chavouoth", "Chavouot"),
+}
 SMILES = ("sourire", "souriant", "rire", "rires", "joie", "joyeu", "heureu", "fou rire", "complice", "rigol")
 PORTRAITS = ("portrait", "visage", "gros plan")
 # thème -> (mots qui le déclenchent, libellé, description pour l'œil d'éditeur, strict)
@@ -43,6 +54,11 @@ THEMES = {
                 "lighting the candles of a hanukkah menorah", True),
     "shabbat": (r"shabbat|chabbat|chabat", "Shabbat", "a family shabbat dinner with candles and challah", True),
     "pourim": (r"pourim|deguisements?|deguises?", "Pourim", "a child wearing a costume", True),
+    "souccot": (r"souc+ot|souk+ot|sukkot|soucot|soukot|soucca|souka", "Souccot",
+                "a family meal in a sukkah hut decorated with branches and hanging decorations", True),
+    "pessah": (r"pessa[hc]h?|pesach|seder", "Pessah", "a family seder table with matzah and wine", True),
+    "roch-hachana": (r"roch hach?ana|rosh hashana|nouvel an juif", "Roch Hachana",
+                     "a festive holiday table with apples and honey", True),
     "zoo": (r"zoo|animaux|ferme", "Les animaux", "a child looking at animals at the zoo or a farm", True),
     "dehors": (r"dehors|parcs?|jardins?|nature|foret|en plein air|exterieur|balades?|promenades?",
                "Dehors", "a child playing outdoors in a park or garden", True),
@@ -50,6 +66,8 @@ THEMES = {
     "repas": (r"repas|a table|manger|cuisine|patisserie", "À table",
               "a family meal or a child cooking in the kitchen", True),
     "velo": (r"velos?|trottinette|draisienne", "Le vélo", "a child riding a bike or a scooter", True),
+    "vacances": (r"vacances|voyage|sorties?|excursions?", "Vacances",
+                 "a family on vacation outdoors, at the beach, a pool or a park", False),
     "calins": (r"calins?|tendresse|bisous?|dans les bras", "Tendresse",
                "a tender hug between a parent and a child", False),
     "fratrie": (r"freres? et s(?:oeu|œu)rs?|fratrie|complicite|jouent ensemble", "Complicité",
@@ -64,7 +82,8 @@ THEME_MARGIN = {"dehors": 0.04, "zoo": 0.04, "velo": 0.04, "repas": 0.04, "bain"
 # ce qui ressemble au thème sans en être : la photo doit ressembler plus au thème qu'à ça
 THEME_NOT = {
     "bain": "an empty bathtub, an adult in a bathroom",
-    "neige": "a grey cloudy sky, autumn leaves",
+    "neige": "a grey winter sky, bare trees, autumn leaves, a white wall",
+    "zoo": "pigeons and ducks at a park lake",
     "anniversaire": "a child playing with toys at home",
 }
 DEFAULT_COUNT = 50
@@ -96,6 +115,7 @@ class Intent:
     bonus: list[str] = field(default_factory=list)
     faces_only: bool = False
     favor_smiles: bool = False
+    family: bool = False           # « en famille » : au moins un membre de la famille par photo
     theme: str = ""                # clé de THEMES, ou vide
     theme_strict: bool = False     # seulement les photos du thème
     understood: list[str] = field(default_factory=list)  # phrases courtes affichées à l'écran
@@ -127,7 +147,8 @@ def theme_of(text: str) -> tuple[str, bool]:
             found.append((m.start(), key))
     if not found:
         return "", False
-    key = min(found)[1]
+    # un lieu ou une occasion (« vacances à la plage ») passe avant une ambiance
+    key = min(found, key=lambda f: (not THEMES[f[1]][3], f[0]))[1]
     strict = THEMES[key][3]
     if re.search(r"\b(?:seulement|uniquement|que des)\b", t):
         strict = True
@@ -139,6 +160,20 @@ def _end_of_month(year: int, month: int) -> date:
     return nxt - timedelta(days=1)
 
 
+def _holiday(t: str, years: list[int], today: date) -> tuple[date | None, date | None, str]:
+    """« Souccot 2025 », « Hanouka » (sans année : la dernière passée)."""
+    from .hebcal import holiday
+
+    for key, (words, label) in HOLIDAYS.items():
+        if re.search(rf"(?<![a-z])(?:{words})(?![a-z])", t):
+            year = years[-1] if years else today.year
+            lo, hi = holiday(key, year)
+            if not years and lo > today:
+                lo, hi = holiday(key, year - 1)
+            return lo, hi, f"{label} {hi.year if key == 'hanouka' and not years else lo.year}"
+    return None, None, ""
+
+
 def _period(t: str, today: date) -> tuple[date | None, date | None, str]:
     years = sorted({int(y) for y in re.findall(r"\b((?:19|20)\d{2})\b", t)})
     if not years:
@@ -146,6 +181,9 @@ def _period(t: str, today: date) -> tuple[date | None, date | None, str]:
             years = [today.year]
         elif re.search(r"l'annee (?:derniere|passee)|annee derniere", t):
             years = [today.year - 1]
+    lo, hi, label = _holiday(t, years, today)
+    if lo:
+        return lo, hi, label
 
     season = next((s for s in SEASONS if re.search(rf"\b{s}\b", t)), None)
     months = [MONTHS[m] for m in re.findall(r"\b(" + "|".join(MONTHS) + r")\b", t)]
@@ -218,7 +256,13 @@ def interpret(text: str, people: list[str], selected: list[str] | None = None,
             found.append((m.start(), p))
     mentioned = [p for _, p in sorted(found)]
     targets = mentioned + [p for p in (selected or []) if p not in mentioned]
-    if targets:
+    it.family = bool(FAMILY.search(t))
+    if it.family:
+        # toute la famille : chaque photo avec au moins l'un d'eux, les photos de groupe en premier
+        it.must = mentioned if len(mentioned) < len(people) else []
+        it.bonus = [p for p in people if p not in it.must]
+        it.understood.append("en famille" + (f", avec {', '.join(it.must)} sur chaque photo" if it.must else ""))
+    elif targets:
         if len(targets) == 1 or any(w in t for w in TOGETHER):
             it.must = targets
         else:
@@ -252,11 +296,15 @@ def interpret(text: str, people: list[str], selected: list[str] | None = None,
         it.understood.append("priorité aux sourires")
 
     it.theme, it.theme_strict = theme_of(text)
+    if it.theme and it.date_from and _holiday(t, [], today)[0] and not re.search(r"\b(?:seulement|uniquement|que des)\b", t):
+        it.theme_strict = False  # les dates de la fête suffisent : le thème met en avant, sans écarter
     if it.theme:
         it.understood.append(f"thème : {THEMES[it.theme][1].lower()}"
                              + (" (seulement)" if it.theme_strict else ""))
 
-    it.name = _album_name(text or "", targets, label, today)
+    it.name = _album_name(text or "", [] if it.family else targets, label, today)
+    if it.family and not re.search(r"[«\"“]", text or ""):
+        it.name = f"{label} en famille" if label else "En famille"
     if it.period_label and it.period_label != label:  # période définie par l'âge
         it.name = _album_name(text or "", [], it.period_label, today)
     return it

@@ -480,6 +480,7 @@ function buildRequest(extra = {}) {
     favor_smiles: $("#f-smiles").checked,
     faces_only: $("#f-portraits").checked,
     theme: $("#f-theme").value,
+    family: !!(state.intent && state.intent.family),
     theme_strict: !!$("#f-theme").value && $("#f-theme-strict").checked,
     use_claude: $("#f-claude").checked,
     ...extra,

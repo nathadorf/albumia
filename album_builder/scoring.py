@@ -198,8 +198,10 @@ def refs_at(ref_sets: dict, births: dict[str, date], when: date) -> dict[str, li
     """
     out = {}
     for name, items in ref_sets.items():
-        chosen = [e for e, _ in items]
         birth = births.get(name)
+        # une photo de référence prise avant la naissance est forcément quelqu'un d'autre
+        items = [(e, d) for e, d in items if not (birth and d and d < birth)] or items
+        chosen = [e for e, _ in items]
         if birth and when >= birth:
             age = months_between(birth, when)
             window = max(6, age // 2)
@@ -490,8 +492,9 @@ THEME_STRICT_MARGIN = 0.05  # thème strict : au moins ça au-dessus de la médi
 THEME_EVENT_SHARE = 0.30    # une journée dont 30 % des photos sont dans le thème…
 THEME_EVENT_MIN = 3         # …(et au moins 3) : ses autres photos racontent le même moment
 THEME_WEIGHT = 0.25         # part du thème dans la note finale
-THEME_FOUND_MARGIN = 0.06   # un thème existe dans le dossier si au moins 5 photos sont
-THEME_FOUND_MIN = 5         # nettement au-dessus de la médiane (sinon : faux positifs)
+THEME_FOUND_EXTRA = 0.02    # un thème existe dans le dossier si au moins 5 photos sont
+THEME_FOUND_MIN = 5         # nettement au-dessus de sa marge (sinon : faux positifs)
+THEME_EVENT_FLOOR = 0.5     # le jour d'un événement : au moins la moitié de la marge
 
 
 def _theme_sims(vecs, theme_vec):
@@ -502,12 +505,12 @@ def _theme_sims(vecs, theme_vec):
     return ids, mat @ np.asarray(theme_vec, dtype=float), mat
 
 
-def theme_found(vecs: dict[str, list[float]], theme_vec) -> bool:
+def theme_found(vecs: dict[str, list[float]], theme_vec, margin: float = THEME_STRICT_MARGIN) -> bool:
     """Le dossier contient-il vraiment ce thème ? (pas d'anniversaire : pas de faux gâteaux)"""
     _, sims, _ = _theme_sims(vecs, theme_vec)
     if not len(sims):
         return False
-    return int((sims >= float(np.median(sims)) + THEME_FOUND_MARGIN).sum()) >= THEME_FOUND_MIN
+    return int((sims >= float(np.median(sims)) + margin + THEME_FOUND_EXTRA).sum()) >= THEME_FOUND_MIN
 
 
 def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec,
@@ -534,8 +537,14 @@ def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec,
         per_day[days.get(fid)] = (tot + 1, hit + int(strong[i]))
     events = {d for d, (tot, hit) in per_day.items()
               if d is not None and hit >= THEME_EVENT_MIN and hit / tot >= THEME_EVENT_SHARE}
-    return {fid: (round(float(notes[i]), 4), bool(strong[i] or (days.get(fid) in events and sims[i] >= med)))
+    return {fid: (round(float(notes[i]), 4), bool(strong[i] or (days.get(fid) in events and sims[i] >= med + THEME_EVENT_FLOOR * margin)))
             for i, fid in enumerate(ids)}
+
+
+FAMILY_MIN_SHARE = 0.15   # album « en famille » : chacun sur au moins ~15 % des photos…
+FAMILY_MAX_SHARE = 0.40   # …et personne seul(e) sur plus de 40 %
+FAMILY_NEED = 0.06        # coup de pouce par personne encore trop peu présente
+FAMILY_TOO_MUCH = 0.10
 
 
 class _Diversity:
@@ -545,8 +554,10 @@ class _Diversity:
     est déjà choisi, au lieu de tout recomparer à chaque tour.
     """
 
-    def __init__(self, items: list[Candidate], strength: float):
+    def __init__(self, items: list[Candidate], strength: float, family: list[str] | None = None):
         self.items, self.strength = items, strength
+        self.family = list(family or [])
+        self.present = {p: 0 for p in self.family}
         n = len(items)
         self.bits = np.array([int(c.feat["dhash"], 16) for c in items], dtype=np.uint64)
         self.times = np.array([c.when.timestamp() for c in items])
@@ -584,6 +595,9 @@ class _Diversity:
         for key in (("shot", self.shot[j]), ("portrait", self.portrait[j]), ("who", self.who[j]),
                     ("scene", self.scene[j])):
             self.count[key] = self.count.get(key, 0) + 1
+        for person in self.who[j]:
+            if person in self.present:
+                self.present[person] += 1
         self.chosen += 1
         if ROUTINE_MAX and self.scene[j]:
             from .aesthetic import ROUTINE
@@ -601,6 +615,14 @@ class _Diversity:
                 + 0.03 * max(0.0, share("portrait", self.portrait[i]) - 0.65)
                 + 0.04 * max(0.0, share("who", self.who[i]) - 0.5)
                 for i in rows_a])
+        if self.family and self.chosen >= 4:
+            share = {p: k / self.chosen for p, k in self.present.items()}
+            missing = {p for p, v in share.items() if v < FAMILY_MIN_SHARE}
+            crowded = {p for p, v in share.items() if v > FAMILY_MAX_SHARE}
+            pen = pen + np.array([
+                -FAMILY_NEED * len(self.who[i] & missing)
+                + (FAMILY_TOO_MUCH if self.who[i] and self.who[i] <= crowded else 0.0)
+                for i in rows_a])
         if ROUTINE_MAX:
             from .aesthetic import ROUTINE
             pen = pen + np.array([
@@ -611,7 +633,7 @@ class _Diversity:
 
 
 def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25,
-                  floor: float | None = None) -> list[Candidate]:
+                  floor: float | None = None, family: list[str] | None = None) -> list[Candidate]:
     """Choisit n photos qui racontent la période.
 
     1. Les places sont réparties entre les périodes (mois, ou tranches d'âge avec `bucket`).
@@ -620,12 +642,13 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
     3. On prend d'abord la meilleure note, en pénalisant ce qui ressemble à ce qui est déjà choisi.
     4. Avec `floor`, une photo trop faible ne bouche pas un trou : la place passe à une autre
        période, ou reste vide (un album plus court vaut mieux qu'une photo ratée).
+    5. Avec `family`, chacun est assez présent et personne n'envahit l'album.
     """
     if floor is not None:
         items = [c for c in items if c.score >= floor]
     if not items:
         return []
-    div = _Diversity(items, diversity)
+    div = _Diversity(items, diversity, family)
     index = {id(c): i for i, c in enumerate(items)}
     scores = np.array([c.score for c in items])
     taken = np.zeros(len(items), dtype=bool)

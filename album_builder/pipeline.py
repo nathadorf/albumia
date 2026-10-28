@@ -112,15 +112,15 @@ def album_theme(params, files, editor, model_dir: Path, rep) -> dict[str, tuple[
     if tvec is None:
         rep.note(f"Thème « {label} » non pris en compte : l'œil d'éditeur n'est pas disponible.")
         return {}
-    if not scoring.theme_found(vecs, tvec):
+    margin = intent.THEME_MARGIN.get(params.theme, scoring.THEME_STRICT_MARGIN)
+    if not scoring.theme_found(vecs, tvec, margin):
         rep.note(f"Je ne trouve pas de photos « {label} » dans ce dossier : thème ignoré.")
         params.theme_strict = False
         return {}
     not_prompt = intent.THEME_NOT.get(params.theme)
     not_vec = aesthetic.theme_vector(model_dir, not_prompt, rep.note) if not_prompt else None
     themed = scoring.theme_scores(vecs, {f.id: f.when.date() for f in files}, tvec,
-                                  margin=intent.THEME_MARGIN.get(params.theme, scoring.THEME_STRICT_MARGIN),
-                                  not_vec=not_vec)
+                                  margin=margin, not_vec=not_vec)
     inside = sum(1 for _, ok in themed.values() if ok)
     if params.theme_strict and inside < min(params.count, MIN_THEMED):
         rep.note(f"Seulement {inside} photo(s) sur le thème « {label} » : je les mets en avant "
@@ -164,6 +164,7 @@ class BuildParams:
     reserve: int = 60                         # photos de remplacement proposées à la relecture
     theme: str = ""                           # clé de intent.THEMES (plage, anniversaire…)
     theme_strict: bool = False                # seulement les photos du thème
+    family: bool = False                      # « en famille » : au moins un des `bonus` par photo
 
 
 class Reporter:
@@ -242,6 +243,13 @@ def build_plan(
         ref_photos = vision.reference_embeddings(vision.get_engine(model_dir), refs_dir)
         refs = {n: vision.mean_embedding([e for _, e in v]) for n, v in ref_photos.items()}
         missing = [w for w in wanted if w not in refs]
+        if params.family and [w for w in params.bonus if w in missing]:
+            skipped = [w for w in params.bonus if w in missing]
+            rep.note(f"Pas encore de photo de référence pour {', '.join(skipped)} : "
+                     "je ne peux pas le reconnaître, l'album se fait avec les autres.")
+            params.bonus = [w for w in params.bonus if w not in missing]
+            wanted = list(dict.fromkeys(params.must + params.bonus))
+            missing = [w for w in missing if w in params.must]
         if missing:
             raise AlbumError(
                 f"Je n'ai pas de photo de référence exploitable pour : {', '.join(missing)}. "
@@ -336,7 +344,7 @@ def build_plan(
         if vec and fid in by_id:
             banned_vecs.setdefault(by_id[fid].when.date(), []).append((by_id[fid].name, vec))
     rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
-                "personne trop petite": 0, "sans visage": 0, "hors thème": 0}
+                "personne trop petite": 0, "sans visage": 0, "personne de la famille": 0, "hors thème": 0}
     for f in files:
         entry = cache.get(f.id)
         if f.id in banned:
@@ -386,6 +394,8 @@ def build_plan(
             rejected["personne absente"] += 1
         elif must_faces and max(x["box"][2] * x["box"][3] for x in must_faces) / area < scoring.MIN_SUBJECT_AREA:
             rejected["personne trop petite"] += 1
+        elif params.family and faces and not labels & set(wanted):
+            rejected["personne de la famille"] += 1
         elif params.faces_only and not faces:
             rejected["sans visage"] += 1
         elif params.theme_strict and themed and not themed.get(f.id, (0, False))[1]:
@@ -436,7 +446,8 @@ def build_plan(
     if main:
         rep.note(f"Répartition selon l'âge de {main}.")
     floor = scoring.quality_floor([c.score for c in pool])
-    selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor)
+    family = list(dict.fromkeys(params.must + params.bonus)) if params.family else None
+    selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor, family=family)
     if len(selected) < params.count and params.theme_strict and themed:
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:
@@ -453,6 +464,7 @@ def build_plan(
         "to": params.date_to.date().isoformat() if params.date_to else None,
         "must": params.must, "bonus": params.bonus, "use_claude": params.use_claude,
         "describe": params.describe, "theme": params.theme, "theme_strict": params.theme_strict,
+        "family": params.family,
     }
     stats = {
         "listed": listed, "analyzed": len(files), "after_filters": len(cands),
