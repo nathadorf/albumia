@@ -321,8 +321,10 @@ async function openGroups() {
       const skip = el("button", { type: "button", class: "btn small", onclick: () => card.remove() }, "Pas de la famille");
       const card = el("div", { class: "group" },
         el("div", { class: "group-faces" }, ...g.previews.map((src) => el("img", { src, alt: "" }))),
-        el("div", { class: "sub" }, `${g.count} photos` + (g.period ? `, ${g.period}` : "") + (g.guess ? ` : peut-être ${g.guess} ?` : "")),
-        el("div", { class: "group-row" }, input, save, skip));
+        el("div", { class: "sub" }, `${g.count} photos` + (g.period ? `, ${g.period}` : "") ),
+        el("div", { class: "group-row" }, input, save, skip),
+        (g.options || []).length ? el("div", { class: "group-row" }, el("span", { class: "sub" }, "Peut-être :"),
+          ...g.options.map((n) => el("button", { type: "button", class: "btn small", onclick: () => { input.value = n; } }, n))) : null);
       return card;
     }));
   } catch (e) {

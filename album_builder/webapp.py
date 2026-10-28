@@ -370,37 +370,25 @@ def face_groups():
         else:
             clusters.append({"key": key, "center": f["emb"], "items": [f]})
     clusters = sorted((c for c in clusters if len(c["items"]) >= 3), key=lambda c: len(c["items"]), reverse=True)[:30]
-    # qui ça pourrait être, à cet âge-là : jamais quelqu'un qui n'était pas encore né, et l'âge
-    # apparent sur la photo (bébé ou plus grand, d'après l'œil d'éditeur) départage frère et sœur
-    from . import aesthetic
-
-    editor = pipeline._load_cache(ROOT / ".cache" / "editor.json")
-    ages = {k: aesthetic.theme_vector(ROOT / "models", prompt, print) for k, prompt in (
-        ("baby", "a photo of a baby under one year old"), ("older", "a photo of a toddler, two or three years old"))}
+    # qui ça pourrait être, à cet âge-là : jamais quelqu'un qui n'était pas encore né. Un enfant
+    # sans référence à cet âge (Hillel bébé, Arié à 3 ans) reste une possibilité : on le propose
+    # plutôt que d'affirmer que c'est le seul enfant connu à cette date.
     for c in clusters:
         year, half = c["key"]
         c["period"] = f"{'janvier-juin' if half == 1 else 'juillet-décembre'} {year}" if year else ""
         whens = sorted(f["when"] for f in c["items"] if f.get("when"))
         when = date.fromisoformat(whens[len(whens) // 2]) if whens else None
         known = known_at(when) if when else {}
-        vecs = [editor[f["file"]]["vec"] for f in c["items"] if (editor.get(f["file"]) or {}).get("vec")]
-        baby = None
-        if vecs and all(v is not None for v in ages.values()):
-            mean = np.mean(np.asarray(vecs, dtype=float), axis=0)
-            gap = float(mean @ ages["baby"]) - float(mean @ ages["older"])
-            baby = True if gap > 0.01 else False if gap < -0.01 else None  # sinon : on ne sait pas
-
-        def plausible(n):
-            if n not in births or not when:
-                return True
-            if births[n] > when:
-                return False
-            months = scoring.months_between(births[n], when)
-            return baby is None or (months <= 15 if baby else months >= 6)
-
-        options = sorted(((float(np.dot(c["center"], v)), n) for n, v in known.items() if plausible(n)), reverse=True)
-        sure = options and options[0][0] >= 0.30 and (len(options) < 2 or options[0][0] - options[1][0] >= 0.05)
-        c["guess"] = options[0][1] if sure else ""
+        alive = lambda n: not (when and n in births and births[n] > when)
+        options = sorted(((float(np.dot(c["center"], v)), n) for n, v in known.items() if alive(n)), reverse=True)
+        unknown_kids = [n for n in births if when and alive(n) and n not in known
+                        and scoring.months_between(births[n], when) < scoring.CHILD_MONTHS]
+        best = options[0] if options else (0.0, "")
+        clear = best[0] >= 0.55 or (best[0] >= 0.30 and not unknown_kids)
+        sure = clear and (len(options) < 2 or best[0] - options[1][0] >= 0.05)
+        c["guess"] = best[1] if sure else (unknown_kids[0] if len(unknown_kids) == 1 and best[0] < 0.55 else "")
+        names = [n for _, n in options if _ >= 0.30] + unknown_kids
+        c["options"] = list(dict.fromkeys(([c["guess"]] if c["guess"] else []) + names))[:4]
     _face_groups.clear()
     out = []
     for c in clusters:
@@ -414,7 +402,7 @@ def face_groups():
                 if ok:
                     previews.append("data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode())
         out.append({"id": gid, "count": len(c["items"]), "previews": previews,
-                    "period": c["period"], "guess": c["guess"]})
+                    "period": c["period"], "guess": c["guess"], "options": c["options"]})
     return jsonify(out)
 
 
