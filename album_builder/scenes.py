@@ -55,7 +55,7 @@ SCENES = [
     ("Repas de fête", "a festive family meal at a decorated table", MEAL),
     ("Repas", "children eating a meal", MEAL),
     ("Intérieur de bus", "the inside of a bus or a tram", BANAL),
-    ("Valises", "suitcases at an airport or in a hall", BANAL),
+    ("Valises", "suitcases at an airport or in a hall", SOUVENIR),
     ("Enfants de dos", "children seen from behind", BANAL),
     ("Station de tram", "a tram station", BANAL),
     ("Rue", "a city street with traffic and buildings", BANAL),
