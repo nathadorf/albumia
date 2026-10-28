@@ -11,16 +11,32 @@ non technique. Tout texte visible est en français, au tutoiement, sans jargon.
 - Rien n'est écrit dans Drive avant validation de l'aperçu.
 - Ne jamais committer `credentials.json`, `token*.json`, `refs/`, `.cache/`, `out/`, `models/`.
 - `lancer.py` n'utilise que la bibliothèque standard (il tourne avant l'installation).
+- Les photos de la famille ne sortent pas de son PC, vignettes comprises : ne les regarde pas dans une session
+  Claude (pas de planche-contact, pas d'outil d'image) sauf demande écrite de Nathanaël. On travaille sur des
+  nombres, des identifiants et des dates (`curate --compare`, `curate --takes`, `taste --eval`).
 
 ## Structure
 - `lancer.py` / `Albumia.bat` / `.vscode/tasks.json` (runOn folderOpen) : lancement en un clic
 - `album_builder/webapp.py` + `static/` : serveur et page (JS sans framework)
-- `album_builder/pipeline.py` : build_plan / apply_plan (page et CLI)
-- `album_builder/intent.py`, `people.py`, `drive.py`, `vision.py`, `scoring.py`, `report.py`, `cli.py`
+- `album_builder/pipeline.py` : build_plan / apply_plan (page et CLI). 1re passe rapide (CLIP ViT-B/32) sur
+  toutes les photos, 2e passe précise (ViT-L/14) sur les meilleures candidates seulement, puis le tri de photographe
+- `album_builder/curate.py` : tri de photographe (un moment = une photo, la prise la plus naturelle, jamais deux
+  fois la même pose, chapitres, plan large d'ouverture, couverture, photos imposées pour que chacun soit présent) ;
+  `python -m album_builder.curate --compare auto/plan.json main/plan.json` et `--takes plan.json…`
+- `album_builder/scoring.py` : critères, `select_spread` (répartition par jour/mois, plafonds, même pose bloquée)
+- `album_builder/scenes.py` (description de chaque photo, « sans intérêt »), `aesthetic.py` (CLIP), `taste.py`
+  (goût appris : `python -m album_builder.taste --eval`), `compose.py`, `learn.py`, `hebcal.py`, `gphotos.py`
+- `album_builder/intent.py`, `people.py`, `drive.py`, `vision.py`, `report.py`, `cli.py`
 
 ## Tests
 `python -m unittest discover -s tests -t .`
 
 ## À vérifier / améliorer en priorité
+- Constantes du tri de photographe (`curate.py` : `MOMENT_COS`, `POSE_COS`, `TAKE_WEIGHTS`, `SCENE_SHARE`…) à
+  régler sur ses relectures avec `--compare` (sa sélection faite à la main : 19 % de retraits contre 29 à 43 %
+  pour les albums automatiques précédents) et `--takes` (quelle prise du moment il garde).
+- Poids des critères de photographe (`interaction`, `eye_level`, `light`, `tidy`, `face_seen`, `moment`, à 0 dans
+  `Weights`) : à fixer d'après `taste --eval` (AUC de chaque critère seul).
+- Le goût appris ne généralise pas encore mieux que les règles (AUC 0,86 contre 0,81 sur des journées jamais vues).
 - Constantes de netteté (`SHARP_RANGE_*` dans scoring.py) à calibrer sur de vraies photos.
 - Seuil de reconnaissance pour les enfants (visages qui changent vite).

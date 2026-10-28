@@ -18,9 +18,13 @@ avec tes mots, tu colles le **lien du dossier**, et il s'occupe du reste.
 3. **Décris l'album** comme tu parles : combien de photos, quelle période, quelle ambiance.
    Albumia affiche juste en dessous ce qu'il a compris ; tu peux tout corriger.
 4. **Colle le lien du dossier Drive** (ouvre le dossier dans Drive, copie l'adresse en haut).
-5. **Préparer mon album.** Albumia regarde chaque photo, puis te montre sa sélection.
-   Le ✕ retire une photo et la remplace par une autre du même moment.
-6. **Créer l'album dans mon Drive.** Il apparaît dans *Mon Drive › Albums (Albumia)*.
+5. **Préparer mon album.** Albumia regarde chaque photo, puis te montre sa sélection, rangée par
+   chapitres (« Mardi 7 octobre · Piscine ») avec une photo de couverture. Le ✕ retire une photo et
+   la remplace par une autre ; le ⇄ propose les autres prises du même moment.
+6. **Créer l'album dans mon Drive.** Il apparaît dans *Mon Drive › Albums (Albumia)*, les photos
+   dans l'ordre (date et heure en début de nom).
+
+Un guide en une page pour utiliser Albumia au quotidien : [GUIDE.md](GUIDE.md).
 
 Rien n'est écrit dans Drive avant l'étape 6. L'album contient des **raccourcis** : tes
 originaux ne bougent pas et ça ne prend aucune place en plus.
@@ -79,6 +83,27 @@ C'est fini : Albumia se souvient de la connexion.
 
 ---
 
+## Comment Albumia choisit (comme un photographe)
+
+Albumia fait ce que ferait un photographe à qui tu confierais tes photos :
+
+- **Une photo par moment.** Les prises faites à quelques minutes d'écart sur la même scène sont
+  un seul moment ; il garde la plus naturelle (l'enfant de face, les yeux ouverts, plusieurs de la
+  famille), pas forcément la plus nette. Il en garde deux seulement pour un moment fort.
+- **Jamais deux fois la même pose**, même à des heures d'écart.
+- **Tout le monde est là** : chacun sur au moins deux photos, une photo de groupe, les bébés
+  un peu plus. Pas d'adulte seul, au plus quelques selfies, repas et photos d'une même activité.
+- **Des plans variés** : pas plus d'un quart de plans larges, mais un plan large au début de
+  chaque chapitre pour situer le lieu (le Kotel, la salle de jeux).
+- **Un séjour se raconte en chapitres**, coupés aux grands écarts de temps ou de scène, avec une
+  photo de groupe en couverture. Un album court et fort vaut mieux qu'un album rempli.
+- **Il apprend de toi.** Chaque photo retirée (pas belle, doublon, pas les bonnes personnes) et
+  chaque photo gardée à la relecture comptent pour les albums suivants.
+
+La première fois, un regard plus précis (un modèle de 430 Mo, téléchargé une fois) est posé sur
+les meilleures candidates seulement : compte une dizaine de minutes pour un gros dossier, puis
+c'est gardé en mémoire. Tout reste sur l'ordinateur.
+
 ## Confidentialité et coût
 
 - **Gratuit.** Albumia n'utilise aucune IA payante par défaut.
@@ -98,8 +123,9 @@ C'est fini : Albumia se souvient de la connexion.
 
 ## Ce qui n'a pas pu être vérifié
 
-Le code est testé automatiquement (39 tests, avec un faux Drive et un faux détecteur de
-visages), mais pas sur un vrai compte Drive :
+Le code est testé automatiquement (plus de 150 tests, avec un faux Drive et un faux détecteur de
+visages), et le tri a été mesuré sur les albums de la famille, mais pas sur tous les cas de vrai
+compte Drive :
 
 - **Modèles de visages** : téléchargés au premier usage depuis GitHub, avec Hugging Face en
   secours. S'ils ne se téléchargent pas, le message indique où les déposer à la main (`models/`).
@@ -108,6 +134,8 @@ visages), mais pas sur un vrai compte Drive :
 - **Raccourcis avec la permission restreinte** : non testé ; le repli « autorisation complète »
   est prévu.
 - **Seuils de netteté** : valeurs de départ (`SHARP_RANGE_*` dans `album_builder/scoring.py`).
+- **Seuils du tri de photographe** (`album_builder/curate.py`) : réglés sur un voyage et quatre
+  relectures de la famille ; à recontrôler sur de nouveaux albums.
 
 ---
 
@@ -121,13 +149,25 @@ album_builder/
   intent.py             description libre -> nombre, période, personnes, ambiance
   people.py             refs/<prénom>/ : visages de référence
   pipeline.py           build_plan / apply_plan, communs à la page et à la ligne de commande
-  drive.py, vision.py, scoring.py, report.py, claude_rerank.py, cli.py
+  curate.py             le tri d'un photographe : moments, prises, chapitres, couverture
+  scoring.py            critères, répartition (jours, mois, âges), plafonds
+  scenes.py, aesthetic.py, taste.py, compose.py, learn.py   ce que montre chaque photo, goût appris
+  hebcal.py, gphotos.py fêtes juives, photos choisies dans Google Photos
+  drive.py, vision.py, report.py, claude_rerank.py, cli.py
 ```
 
 Tests : `Ctrl+Maj+P › Tasks: Run Test Task`, ou
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -t .      # Windows : .venv\Scripts\python.exe
+```
+
+Comparer un album automatique à une sélection faite à la main, et régler le choix de la prise :
+
+```bash
+python -m album_builder.curate --compare out/auto/plan.json out/main/plan.json
+python -m album_builder.curate --takes out/main/plan.json
+python -m album_builder.taste --eval        # ce que le goût appris sait prédire
 ```
 
 La ligne de commande d'origine fonctionne toujours :
