@@ -29,6 +29,7 @@ MIN_SUBJECT_AREA = 0.015          # visage de la personne choisie < 1,5 % de la 
 
 PRINT_MIN_SIDE = (800, 1500)      # côté court de l'original (px) : 0 → 1 de note « impression »
 PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image de messagerie) : trop petite pour un album
+SELFIE_PENALTY = 0.15             # quelqu'un d'autre (papa en selfie) au premier plan
 SAME_CONTENT_COS = (0.80, 0.95)   # CLIP : 0,80 = scène voisine, 0,95 = même scène (autre angle)
 SAME_SCENE_DUPLICATE = 0.93       # CLIP, photos à moins de 15 min : doublon (canapé, poussette…)
 ROUTINE_MAX = None                # plafond de routine : désactivé, le type de scène CLIP se trompe trop
@@ -56,7 +57,7 @@ class Weights:
     # composition des photographes (compose.py). Mesurée sur une sélection faite à la main
     # (44 contre 66) : seule la couleur sépare un peu (AUC 0,60) ; le reste n'aide pas encore
     # et sert seulement d'entrée au goût appris (taste.py), qui décidera s'il compte.
-    placement: float = 0.02           # visage près d'un point fort (AUC 0,56)
+    placement: float = 0.0            # règle des tiers : à l'inverse du goût de la famille (AUC 0,36)
     headroom: float = 0.0
     clean: float = 0.0
     attention: float = 0.0
@@ -233,11 +234,14 @@ def local_score(
     framing = faces_score(focus, feat["w"], feat["h"], total=len(faces))
     if focus and max(focus, key=lambda f: f["box"][2] * f["box"][3]).get("edge"):
         framing *= 0.6  # visage principal coupé par le bord
+    other_first = 0.0
     if focus is not faces and focus:
-        # selfie ou photo centrée sur quelqu'un d'autre : un autre visage est bien plus grand
+        # selfie ou photo centrée sur quelqu'un d'autre : un autre visage est plus grand
         area = lambda f: f["box"][2] * f["box"][3]
-        if max(area(f) for f in faces) > 2 * max(area(f) for f in focus):
+        ratio = max(area(f) for f in faces) / max(area(f) for f in focus)
+        if ratio > 1.3:
             framing *= 0.5
+            other_first = _clip((ratio - 1.3) / 1.7)
     resolution = print_score(meta.get("width"), meta.get("height"))
     if meta.get("kind") == "messagerie":
         resolution *= 0.5
@@ -268,6 +272,8 @@ def local_score(
         w["bonus"] = weights.bonus
     total_w = sum(w.values())
     score = sum(parts[k] * w[k] for k in w) / total_w
+    parts["other_first"] = other_first
+    score = max(0.0, score - SELFIE_PENALTY * other_first)  # 6 selfies de papa retirés sur 6 à la relecture
     if meta.get("starred"):
         score = min(1.0, score + STAR_BONUS)
     return score, parts

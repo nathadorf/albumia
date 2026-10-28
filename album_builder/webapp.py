@@ -469,6 +469,8 @@ def job_cancel(job_id):
 
 
 DISLIKE_REASONS = ("pas-belle", "gout")
+# un doublon retiré ne revient pas non plus (sinon il remplace sa jumelle quand elle est retirée)
+EXCLUDE_REASONS = DISLIKE_REASONS + ("doublon",)
 
 
 def _read_plan(slug: str) -> tuple[Path, dict]:
@@ -493,11 +495,12 @@ def save_review(slug):
     removed = [{"id": r["id"], "reason": r.get("reason", "gout")}
                for r in b.get("removed", []) if r.get("id") in known]
     before = {r["id"] for r in (plan.get("review") or {}).get("removed", [])
-              if r.get("reason") in DISLIKE_REASONS}
+              if r.get("reason") in EXCLUDE_REASONS}
     disliked = {r["id"] for r in removed if r["reason"] in DISLIKE_REASONS}
+    gone = {r["id"] for r in removed if r["reason"] in EXCLUDE_REASONS}
     taste.add_examples(ROOT, [], sorted(disliked), parts={i: known[i].get("parts", {}) for i in disliked})
-    taste.exclude(ROOT, sorted(disliked))
-    taste.unexclude(ROOT, sorted(before - disliked))  # « Annuler » après un ✕
+    taste.exclude(ROOT, sorted(gone))
+    taste.unexclude(ROOT, sorted(before - gone))  # « Annuler » après un ✕
     plan["review"] = {"ids": ids, "removed": removed}
     plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     return jsonify({"saved": len(removed)})
@@ -549,7 +552,7 @@ def apply():
         disliked = [r["id"] for r in removed if r["reason"] in DISLIKE_REASONS]
         taste.add_examples(ROOT, [p["id"] for p in photos], disliked,
                            parts={p["id"]: p.get("parts", {}) for p in photos + removed})
-        taste.exclude(ROOT, disliked)
+        taste.exclude(ROOT, [r["id"] for r in removed if r["reason"] in EXCLUDE_REASONS])
         plan.update(album_name=name, photos=photos, drive_url=url)
         plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"url": url, "count": len(photos), "name": name}
