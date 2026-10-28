@@ -137,6 +137,9 @@ class FakeJudge:
     def judge(self, img):
         return {"beauty": 0.5, "emotion": 0.5, "not_album": 0.99 if img.mean() > 127.6 else 0.1}
 
+    def scene(self, vec):
+        return "repas" if vec[0] > vec[1] * 3 else "dehors"
+
     def judge_with_vector(self, img):
         v = np.array([img.mean(), img.std(), 1.0])
         return self.judge(img), (v / np.linalg.norm(v)).round(4).tolist()

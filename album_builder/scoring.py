@@ -29,6 +29,9 @@ MIN_SUBJECT_AREA = 0.015          # visage de la personne choisie < 1,5 % de la 
 
 PRINT_MIN_SIDE = (800, 1500)      # côté court de l'original (px) : 0 → 1 de note « impression »
 PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image de messagerie) : trop petite pour un album
+SAME_CONTENT_COS = (0.80, 0.95)   # CLIP : 0,80 = scène voisine, 0,95 = même scène (autre angle)
+SAME_SCENE_DUPLICATE = 0.93       # CLIP, photos à moins de 15 min : doublon (canapé, poussette…)
+ROUTINE_MAX = 3                   # chaise haute, siège auto, poussette, repas : au plus 3 par album
 SAME_INSTANT_SECONDS = 600        # deux photos à moins de 10 min : même instant, on préfère varier
 STAR_BONUS = 0.12                 # photo étoilée dans Drive
 MOMENT_GAP_HOURS = 2              # plus de 2 h sans photo : un nouveau moment commence
@@ -47,9 +50,16 @@ class Weights:
     frontal: float = 0.06             # regarde vers l'objectif
     exposure: float = 0.07
     resolution: float = 0.06          # assez grande pour un tirage
-    beauty: float = 0.18              # œil d'éditeur : composition, lumière, sujet clair (CLIP)
-    emotion: float = 0.12             # œil d'éditeur : joie, tendresse, regard (CLIP)
-    taste: float = 0.12               # goût appris (CLIP) : prudent tant qu'il y a peu d'exemples
+    beauty: float = 0.10              # œil d'éditeur (CLIP) : AUC 0,61 sur la sélection de référence
+    emotion: float = 0.16             # œil d'éditeur (CLIP) : joie, tendresse ; AUC 0,70
+    # composition des photographes (compose.py), à valider sur de vraies sélections
+    placement: float = 0.06           # sujet pas collé au bord
+    headroom: float = 0.02            # de l'air au-dessus de la tête
+    clean: float = 0.06               # fond simple
+    attention: float = 0.04           # l'œil va au sujet
+    level: float = 0.03               # horizon droit
+    color: float = 0.03               # couleurs vivantes
+    contrast: float = 0.02
     bonus: float = 0.16
 
 
@@ -238,9 +248,17 @@ def local_score(
         "resolution": resolution,
     }
     editor = meta.get("editor") or {}
-    for k in ("beauty", "emotion", "taste"):
+    for k in ("beauty", "emotion"):
         if k in editor:
             parts[k] = float(editor[k])
+    comp = meta.get("comp")
+    if comp:
+        parts.update({k: float(v) for k, v in comp.items()})
+        if focus:
+            from . import compose
+            main = max(focus, key=lambda f: f["box"][2] * f["box"][3])
+            parts["placement"] = compose.placement(main["box"], feat["w"], feat["h"])
+            parts["headroom"] = compose.headroom(main["box"], feat["w"], feat["h"])
     w = {k: getattr(weights, k) for k in parts}
     if bonus_labels:
         parts["bonus"] = sum(1 for b in bonus_labels if b in labels) / len(bonus_labels)
@@ -294,6 +312,16 @@ def dedupe_bursts(
                    | ((dt <= burst_seconds) & (dist <= burst_threshold)) | (dt < 1.0))
             for k in np.nonzero(dup)[0]:
                 union(i + 1 + int(k), i)
+
+        vecs = [c.meta.get("vec") for c in ordered]
+        if all(vecs):
+            V = np.asarray(vecs, dtype=float)
+            for i in range(n - 1):
+                close = np.nonzero((times[i + 1 :] - times[i]) <= window_seconds)[0]
+                if len(close):
+                    sims = V[i + 1 + close] @ V[i]
+                    for k in close[sims >= SAME_SCENE_DUPLICATE]:
+                        union(i + 1 + int(k), i)
 
     best: dict[int, Candidate] = {}
     for i, c in enumerate(ordered):
@@ -354,13 +382,24 @@ def moment_cap(size: int) -> int:
     return 1 if size < 5 else 2 if size < 15 else 3
 
 
+def content_similarity(a: Candidate, b: Candidate) -> float | None:
+    """Ressemblance de contenu (CLIP) : même scène même sous un autre angle. None si inconnue."""
+    va, vb = a.meta.get("vec"), b.meta.get("vec")
+    if not va or not vb:
+        return None
+    return float(np.dot(va, vb))
+
+
 def similarity(a: Candidate, b: Candidate) -> float:
-    """0 à 1 : même décor, mêmes couleurs, même cadrage."""
+    """0 à 1 : même décor, mêmes couleurs, même cadrage, ou même contenu."""
     visual = max(0.0, 1.0 - hamming_hex(a.feat["dhash"], b.feat["dhash"]) / 32.0)
     ha, hb = a.feat.get("hues"), b.feat.get("hues")
-    if not ha or not hb:
+    if ha and hb:
+        visual = 0.5 * visual + 0.5 * float(sum(min(x, y) for x, y in zip(ha, hb)))
+    cos = content_similarity(a, b)
+    if cos is None:
         return visual
-    return 0.5 * visual + 0.5 * float(sum(min(x, y) for x, y in zip(ha, hb)))
+    return max(visual, _clip((cos - SAME_CONTENT_COS[0]) / (SAME_CONTENT_COS[1] - SAME_CONTENT_COS[0])))
 
 
 def _share(chosen: list[Candidate], key, value) -> float:
@@ -382,6 +421,13 @@ def diversity_penalty(c: Candidate, chosen: list[Candidate], strength: float = 0
         penalty += 0.03 * max(0.0, _share(chosen, lambda o: o.feat["h"] > o.feat["w"], portrait) - 0.65)
         who = frozenset(c.labels)
         penalty += 0.04 * max(0.0, _share(chosen, lambda o: frozenset(o.labels), who) - 0.5)
+    scene = c.meta.get("scene")
+    if scene:
+        from .aesthetic import ROUTINE
+        same = sum(1 for o in chosen if o.meta.get("scene") == scene)
+        penalty += 0.03 * same
+        if scene in ROUTINE and sum(1 for o in chosen if o.meta.get("scene") in ROUTINE) >= ROUTINE_MAX:
+            penalty += 0.3
     return penalty
 
 

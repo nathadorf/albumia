@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import aesthetic, people, scoring, taste, vision
+from . import aesthetic, compose, people, scoring, taste, vision
 from .errors import AlbumError, Cancelled
 from .report import slugify, write_plan
 
@@ -51,34 +51,44 @@ def date_references(ref_photos: dict, known: dict, cache: dict, min_sim: float =
     return out
 
 
-def _editor_scores(entry: dict | None, liked) -> dict | None:
-    if not entry:
-        return None
-    scores = dict(entry.get("scores") or {})
-    if liked and entry.get("vec"):
-        scores["taste"] = liked.predict(entry["vec"])
-    return scores
-
-
 def judge_photos(files, cache, thumbs_dir: Path, editor_path: Path, model_dir: Path, rep, cancel) -> dict:
-    """Œil d'éditeur (beauté, émotion) sur chaque miniature, gardé en cache comme l'analyse."""
+    """Composition (OpenCV) et œil d'éditeur (CLIP) sur chaque miniature, gardés en cache."""
     editor = _load_cache(editor_path)
-    todo = [f for f in files if f.id in cache
-            and (editor.get(f.id, {}).get("mod"), editor.get(f.id, {}).get("v")) != (f.modified, aesthetic.VERSION)
-            and (thumbs_dir / f"{f.id}.jpg").exists()]
+    ready = [f for f in files if f.id in cache and (thumbs_dir / f"{f.id}.jpg").exists()]
+
+    def stale(f, key, version):
+        e = editor.get(f.id, {})
+        return (e.get("mod"), e.get(key)) != (f.modified, version)
+
+    need_comp = [f for f in ready if stale(f, "cv", compose.VERSION)]
+    need_clip = [f for f in ready if stale(f, "v", aesthetic.VERSION)]
+    if not need_comp and not need_clip:
+        return editor
+    judge = aesthetic.load_judge(model_dir, rep.note) if need_clip else None
+    todo = {f.id: f for f in need_comp + (need_clip if judge else [])}
     if not todo:
         return editor
-    judge = aesthetic.load_judge(model_dir, rep.note)
-    if judge is None:
-        return editor
-    rep.note(f"Œil d'éditeur sur {len(todo)} photos…")
-    for i, f in enumerate(todo, 1):
+    rep.note(f"Regard d'éditeur sur {len(todo)} photos…")
+    for i, f in enumerate(todo.values(), 1):
         if cancel.is_set():
             break
         img = vision.imread(thumbs_dir / f"{f.id}.jpg")
-        if img is not None:
-            scores, vec = judge.judge_with_vector(img)
-            editor[f.id] = {"mod": f.modified, "v": aesthetic.VERSION, "scores": scores, "vec": vec}
+        if img is None:
+            continue
+        e = editor.get(f.id, {})
+        if e.get("mod") != f.modified:
+            e = {}
+        e["mod"] = f.modified
+        if stale(f, "cv", compose.VERSION) or "comp" not in e:
+            faces = scoring.real_faces(cache[f.id]["feat"])
+            boxes = [x["box"] for x in faces]
+            scale = img.shape[1] / float(cache[f.id]["feat"]["w"] or img.shape[1])
+            boxes = [[v * scale for v in b] for b in boxes]
+            e["comp"], e["cv"] = compose.measure(img, boxes), compose.VERSION
+        if judge and (e.get("v") != aesthetic.VERSION or "vec" not in e):
+            e["scores"], e["vec"] = judge.judge_with_vector(img)
+            e["scene"], e["v"] = judge.scene(e["vec"]), aesthetic.VERSION
+        editor[f.id] = e
         if i % 200 == 0:
             _save_cache(editor_path, editor)
     _save_cache(editor_path, editor)
@@ -258,9 +268,6 @@ def build_plan(
     if failed:
         rep.note(f"{failed} photo(s) sans aperçu Drive, ignorées.")
     editor = judge_photos(files, cache, thumbs_dir, workdir / ".cache" / "editor.json", model_dir, rep, cancel)
-    liked = taste.model_for(workdir, editor)
-    if liked:
-        rep.note(f"Ton goût, appris sur {liked.size} photos gardées ou retirées, compte dans le choix.")
 
     rep.step(4, "Choix des meilleures photos…")
     for f in files:
@@ -276,6 +283,7 @@ def build_plan(
     births = people.births(refs_dir)
     ref_sets = {n: [(e, dates.get(n, {}).get(photo)) for photo, e in v] for n, v in ref_photos.items()}
     refs_by_month: dict = {}
+    all_parts: dict[str, dict] = {}
     cands: list[scoring.Candidate] = []
     banned = taste.excluded(workdir)
     rejected = {"retirée avant": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
@@ -301,12 +309,16 @@ def build_plan(
         c = scoring.Candidate(f.id, f.name, f.when, feat, labels)
         focus = [x for x, label in zip(faces, per_face) if label in wanted] if wanted else faces
         c.meta = {"starred": f.starred, "kind": kind, "width": f.width, "height": f.height,
-                  "editor": _editor_scores(editor.get(f.id), liked),
+                  "editor": (editor.get(f.id) or {}).get("scores"),
+                  "comp": (editor.get(f.id) or {}).get("comp"),
+                  "vec": (editor.get(f.id) or {}).get("vec"),
+                  "scene": (editor.get(f.id) or {}).get("scene"),
                   "shot": scoring.shot_type(feat, focus or faces)}
         c.local_score, c.parts = scoring.local_score(
             feat, labels, params.bonus, params.weights, per_face, wanted, c.meta
         )
         c.score = c.local_score
+        all_parts[f.id] = c.parts
         must_faces = [x for x, label in zip(faces, per_face) if label in params.must]
         area = float(feat["w"] * feat["h"]) or 1.0
         if kind == "capture":
@@ -325,6 +337,13 @@ def build_plan(
             rejected["sans visage"] += 1
         else:
             cands.append(c)
+    _save_cache(workdir / ".cache" / "parts.json", all_parts)  # pour mesurer le goût (taste --eval)
+    liked = taste.model_for(workdir, all_parts)
+    if liked:
+        rep.note(f"Ton goût, appris sur {liked.size} photos gardées ou retirées, compte dans le choix.")
+        for c in cands:
+            c.parts["taste"] = liked.predict(c.parts)
+            c.local_score = c.score = (1 - taste.WEIGHT) * c.score + taste.WEIGHT * c.parts["taste"]
     rep.note(f"{len(cands)} photos retenues ; écartées : "
              + ", ".join(f"{k} {v}" for k, v in rejected.items() if v))
     if not cands:

@@ -248,44 +248,69 @@ class EditorEyeTests(unittest.TestCase):
 
 
 class TasteTests(unittest.TestCase):
+    """Goût appris sur des critères lisibles : ici, la famille n'aime que les fonds simples."""
+
     def data(self, n=40, seed=0):
         import numpy as np
         rng = np.random.default_rng(seed)
-        editor, pos, neg = {}, [], []
+        parts, pos, neg = {}, [], []
         for i in range(n):
             liked = i % 2 == 0
-            v = rng.normal(size=16) + (2.0 if liked else -2.0) * np.eye(16)[0]
-            editor[f"p{i}"] = {"vec": (v / np.linalg.norm(v)).tolist()}
+            p = {k: float(rng.uniform(0.2, 0.8)) for k in ("sharpness", "smile", "emotion", "color")}
+            p["clean"] = float(rng.uniform(0.6, 1.0) if liked else rng.uniform(0.0, 0.5))
+            parts[f"p{i}"] = p
             (pos if liked else neg).append(f"p{i}")
-        return editor, pos, neg
+        return parts, pos, neg
 
-    def test_learns_and_generalises(self):
+    def test_learns_what_matters_and_generalises(self):
         from album_builder import taste
-        editor, pos, neg = self.data()
+        parts, pos, neg = self.data()
         with tempfile.TemporaryDirectory() as d:
-            taste.add_examples(Path(d), pos, neg)
-            self.assertGreater(taste.cross_val_auc(editor, taste.load_examples(Path(d))), 0.85)
-            m = taste.model_for(Path(d), editor)
-            self.assertGreater(m.predict(editor[pos[0]]["vec"]), m.predict(editor[neg[0]]["vec"]))
+            taste.add_examples(Path(d), pos, neg, parts=parts)
+            X, y = taste._dataset(taste.load_examples(Path(d)))
+            self.assertGreater(taste.cross_val_auc(X, y), 0.9)
+            m = taste.model_for(Path(d))
+            self.assertEqual(m.explain(1)[0][0], "clean")
+            self.assertGreater(m.predict(parts[pos[0]]), m.predict(parts[neg[0]]))
 
     def test_needs_enough_examples_and_last_opinion_wins(self):
         from album_builder import taste
-        editor, pos, neg = self.data()
+        parts, pos, neg = self.data()
         with tempfile.TemporaryDirectory() as d:
-            taste.add_examples(Path(d), pos[:3], neg[:3])
-            self.assertIsNone(taste.model_for(Path(d), editor))
+            taste.add_examples(Path(d), pos[:3], neg[:3], parts=parts)
+            self.assertIsNone(taste.model_for(Path(d)))
             taste.add_examples(Path(d), [], [pos[0]])
             ex = taste.load_examples(Path(d))
             self.assertIn(pos[0], ex["neg"])
+            self.assertEqual(ex["neg"][pos[0]], parts[pos[0]])   # critères gardés
             self.assertNotIn(pos[0], ex["pos"])
+
+    def test_current_parts_override_saved(self):
+        from album_builder import taste
+        parts, pos, neg = self.data()
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), pos, neg)   # sans critères enregistrés
+            self.assertIsNone(taste.model_for(Path(d)))
+            self.assertIsNotNone(taste.model_for(Path(d), parts))
 
     def test_seed_from_plan(self):
         import json
         from album_builder import taste
         with tempfile.TemporaryDirectory() as d:
             plan = Path(d) / "plan.json"
-            plan.write_text(json.dumps({"photos": [{"id": "a"}], "reserve": [{"id": "b"}, {"id": "c"}]}))
+            plan.write_text(json.dumps({"photos": [{"id": "a", "parts": {"smile": 1}}],
+                                        "reserve": [{"id": "b"}, {"id": "c"}]}))
             self.assertEqual(taste.seed_from_plan(Path(d), plan), (1, 2))
+            self.assertEqual(taste.load_examples(Path(d))["pos"]["a"], {"smile": 1})
+
+    def test_unexclude_after_undo(self):
+        from album_builder import taste
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), [], ["x"], parts={"x": {"smile": 0}})
+            taste.exclude(Path(d), ["x"])
+            taste.unexclude(Path(d), ["x"])
+            self.assertEqual(taste.excluded(Path(d)), set())
+            self.assertNotIn("x", taste.load_examples(Path(d))["neg"])
 
 
 class FinalTouchTests(unittest.TestCase):
@@ -315,8 +340,48 @@ class FinalTouchTests(unittest.TestCase):
         from album_builder import taste
         import numpy as np
         rng = np.random.default_rng(3)
-        editor = {f"p{i}": {"vec": (rng.normal(size=8)).tolist()} for i in range(40)}
+        parts = {f"p{i}": {"smile": float(rng.uniform()), "clean": float(rng.uniform())} for i in range(40)}
         with tempfile.TemporaryDirectory() as d:
-            taste.add_examples(Path(d), [f"p{i}" for i in range(20)], [f"p{i}" for i in range(20, 40)])
-            self.assertIsNone(taste.model_for(Path(d), editor))   # bruit : pas de goût fiable
-            self.assertIsNotNone(taste.model_for(Path(d), editor, min_auc=0))
+            taste.add_examples(Path(d), [f"p{i}" for i in range(20)], [f"p{i}" for i in range(20, 40)], parts=parts)
+            self.assertIsNone(taste.model_for(Path(d)))   # bruit : pas de goût fiable
+            self.assertIsNotNone(taste.model_for(Path(d), min_auc=0))
+
+
+class AlbumRulesTests(unittest.TestCase):
+    """Règles des éditeurs d'albums : pas de redite (même sous un autre angle), peu de routine."""
+
+    def vcand(self, i, when, score, vec, scene=None):
+        import numpy as np
+        c = cand(i, when, score, dhash=h(i))
+        c.meta = {"vec": (np.asarray(vec, float) / np.linalg.norm(vec)).tolist(), "scene": scene}
+        return c
+
+    def test_same_content_other_angle_is_duplicate(self):
+        t = datetime(2023, 5, 7, 10)
+        a = self.vcand(1, t, 0.9, [1, 0.1, 0])
+        b = self.vcand(2, t + timedelta(minutes=6), 0.8, [1, 0.12, 0.02])   # même canapé, autre angle
+        c = self.vcand(3, t + timedelta(minutes=8), 0.7, [0, 1, 0])
+        self.assertEqual({x.file_id for x in scoring.dedupe_bursts([a, b, c])}, {"id1", "id3"})
+
+    def test_routine_scenes_are_capped(self):
+        t = datetime(2023, 1, 1, 9)
+        routine = [self.vcand(i, t + timedelta(days=i), 0.9, [1, i, 0], "chaise haute" if i % 2 else "siège auto")
+                   for i in range(8)]
+        outings = [self.vcand(100 + i, t + timedelta(days=i, hours=6), 0.75, [0, 1, i], "dehors") for i in range(8)]
+        chosen = scoring.select_spread(routine + outings, 8)
+        self.assertLessEqual(sum(1 for c in chosen if c.meta["scene"] != "dehors"), scoring.ROUTINE_MAX)
+
+    def test_composition_metrics(self):
+        import cv2
+        import numpy as np
+        from album_builder import compose
+        simple = np.full((480, 360, 3), 200, np.uint8)
+        cv2.circle(simple, (180, 200), 60, (30, 60, 200), -1)
+        busy = np.random.default_rng(0).integers(0, 255, (480, 360, 3)).astype(np.uint8)
+        box = [130, 150, 100, 100]
+        self.assertGreater(compose.measure(simple, [box])["clean"], compose.measure(busy, [box])["clean"])
+        self.assertGreater(compose.placement(box, 360, 480), compose.placement([0, 150, 60, 60], 360, 480))
+        tilt = np.full((360, 480), 255, np.uint8)
+        cv2.line(tilt, (0, 150), (479, 200), 0, 3)
+        cv2.line(tilt, (0, 250), (479, 300), 0, 3)
+        self.assertLess(compose.level(tilt), 0.5)

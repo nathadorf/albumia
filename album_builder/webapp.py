@@ -468,6 +468,9 @@ def job_cancel(job_id):
     return jsonify(job.to_dict())
 
 
+DISLIKE_REASONS = ("pas-belle", "gout")
+
+
 def _read_plan(slug: str) -> tuple[Path, dict]:
     path = OUT / slugify(slug) / "plan.json"
     if not path.exists():
@@ -478,6 +481,26 @@ def _read_plan(slug: str) -> tuple[Path, dict]:
 @app.get("/api/plans/<slug>")
 def get_plan(slug):
     return jsonify(_read_plan(slug)[1])
+
+
+@app.put("/api/plans/<slug>/review")
+def save_review(slug):
+    """Chaque ✕ est retenu tout de suite (même sans créer l'album, même si la page se recharge)."""
+    b = request.get_json(silent=True) or {}
+    plan_path, plan = _read_plan(slug)
+    known = {p["id"]: p for p in plan["photos"] + plan.get("reserve", [])}
+    ids = [i for i in b.get("ids", []) if i in known]
+    removed = [{"id": r["id"], "reason": r.get("reason", "gout")}
+               for r in b.get("removed", []) if r.get("id") in known]
+    before = {r["id"] for r in (plan.get("review") or {}).get("removed", [])
+              if r.get("reason") in DISLIKE_REASONS}
+    disliked = {r["id"] for r in removed if r["reason"] in DISLIKE_REASONS}
+    taste.add_examples(ROOT, [], sorted(disliked), parts={i: known[i].get("parts", {}) for i in disliked})
+    taste.exclude(ROOT, sorted(disliked))
+    taste.unexclude(ROOT, sorted(before - disliked))  # « Annuler » après un ✕
+    plan["review"] = {"ids": ids, "removed": removed}
+    plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+    return jsonify({"saved": len(removed)})
 
 
 @app.get("/api/albums")
@@ -523,8 +546,9 @@ def apply():
             raise AlbumError(f"Google Drive a refusé la création ({e.reason}).", code="drive")
         url = folder.get("webViewLink") or f"https://drive.google.com/drive/folders/{folder['id']}"
         learn.record(ROOT, name, photos, removed)
-        disliked = [r["id"] for r in removed if r["reason"] in ("pas-belle", "gout")]
-        taste.add_examples(ROOT, [p["id"] for p in photos], disliked)
+        disliked = [r["id"] for r in removed if r["reason"] in DISLIKE_REASONS]
+        taste.add_examples(ROOT, [p["id"] for p in photos], disliked,
+                           parts={p["id"]: p.get("parts", {}) for p in photos + removed})
         taste.exclude(ROOT, disliked)
         plan.update(album_name=name, photos=photos, drive_url=url)
         plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")

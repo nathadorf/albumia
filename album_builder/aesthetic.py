@@ -27,7 +27,7 @@ FILES = {
 }
 MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
 STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
-VERSION = 2  # à changer si les descriptions ci-dessous changent (2 : vecteur image gardé pour le goût)
+VERSION = 3  # à changer si les descriptions ci-dessous changent (3 : types de scène)
 
 # critère -> (descriptions positives, descriptions négatives)
 CRITERIA = {
@@ -56,6 +56,22 @@ CRITERIA = {
         ["a family photo", "a photo of a child"],
     ),
 }
+# type de scène : la routine (chaise haute, siège auto…) ne doit pas envahir l'album
+SCENES = {
+    "chaise haute": "a baby sitting in a high chair",
+    "siège auto": "a child sitting in a car seat",
+    "poussette": "a child sitting in a stroller",
+    "repas": "a child eating a meal at a table",
+    "bain": "a child in the bath",
+    "dodo": "a sleeping baby in bed",
+    "jeu à la maison": "a child playing with toys on the floor at home",
+    "dehors": "a child playing outdoors in a park or garden",
+    "fête": "a birthday party with a cake and decorations",
+    "sortie": "a family day out at the beach, the zoo or a fair",
+    "câlin": "a parent hugging a child",
+    "portrait": "a close-up portrait of a child's face",
+}
+ROUTINE = {"chaise haute", "siège auto", "poussette", "repas"}
 NOT_ALBUM_REJECT = 0.97   # au-delà : photo d'écran, pot… écartée (plus bas, trop de belles photos partaient)
 
 
@@ -96,6 +112,7 @@ class Judge:
             return out / np.linalg.norm(out, axis=1, keepdims=True)
 
         vectors = {k: (embed(pos), embed(neg)) for k, (pos, neg) in CRITERIA.items()}
+        vectors["_scenes"] = (embed(list(SCENES.values())), np.zeros((0, 1)))
         cache_path.write_text(json.dumps({"v": VERSION, "criteria": {
             k: [p.round(5).tolist(), n.round(5).tolist()] for k, (p, n) in vectors.items()}}), encoding="utf-8")
         return vectors
@@ -113,11 +130,20 @@ class Judge:
         vec = self.embed_image(img_bgr)
         return judge_vector(vec, self.text_vectors), [round(float(x), 4) for x in vec]
 
+    def scene(self, vec) -> str:
+        return scene_of(np.asarray(vec, dtype=float), self.text_vectors["_scenes"][0])
+
+
+def scene_of(img_vec: np.ndarray, scene_vectors: np.ndarray) -> str:
+    return list(SCENES)[int(np.argmax(scene_vectors @ img_vec))]
+
 
 def judge_vector(img_vec: np.ndarray, text_vectors: dict) -> dict[str, float]:
     """Pour chaque critère : probabilité (0 à 1) que l'image ressemble aux descriptions positives."""
     out = {}
     for k, (pos, neg) in text_vectors.items():
+        if k.startswith("_"):
+            continue
         logits = 100.0 * np.concatenate([pos @ img_vec, neg @ img_vec])
         p = np.exp(logits - logits.max())
         p /= p.sum()

@@ -539,6 +539,14 @@ async function openReview(slug) {
   state.photos = plan.photos.slice();
   state.reserve = (plan.reserve || []).slice();
   state.removed = [];
+  if (plan.review) {  // relecture déjà commencée : on la reprend où elle en était
+    const all = new Map([...plan.photos, ...(plan.reserve || [])].map((p) => [p.id, p]));
+    const ids = plan.review.ids.filter((i) => all.has(i));
+    state.photos = ids.map((i) => all.get(i));
+    state.reserve = [...all.values()].filter((p) => !ids.includes(p.id)
+      && !plan.review.removed.some((r) => r.id === p.id));
+    state.removed = plan.review.removed.slice();
+  }
   $("#r-name").value = plan.album_name;
   const s = plan.stats || {};
   const wanted = plan.settings && plan.settings.count;
@@ -614,7 +622,7 @@ function showAlternatives(p, anchor) {
   if (!alts.length) { toast("Pas d'autre bonne photo de ce moment."); return; }
   popover(anchor, el("div", { class: "pop-title" }, "Remplacer par :"),
     el("div", { class: "pop-alts" }, ...alts.map((a) => el("img", { src: thumb(a), alt: a.name, title: fmtDate(a.date),
-      onclick: () => { closePopover(); replacePhoto(p, a, "gout"); } }))));
+      onclick: () => { closePopover(); replacePhoto(p, a, "echange"); } }))));
 }
 
 function replacePhoto(p, replacement, reason) {
@@ -624,6 +632,7 @@ function replacePhoto(p, replacement, reason) {
   state.photos.splice(idx, 1, ...(replacement ? [replacement] : []));
   state.removed.push({ id: p.id, reason });
   renderReview(replacement && replacement.id);
+  saveReview();
   toast(replacement ? "Photo remplacée." : "Photo retirée.", {
     label: "Annuler",
     run: () => {
@@ -632,8 +641,20 @@ function replacePhoto(p, replacement, reason) {
       if (j >= 0) { state.photos.splice(j, 1, p); state.reserve.unshift(replacement); }
       else state.photos.push(p);
       renderReview();
+      saveReview();
     },
   });
+}
+
+// chaque retrait est enregistré tout de suite : rien n'est perdu si la page se ferme
+let reviewTimer = null;
+function saveReview() {
+  clearTimeout(reviewTimer);
+  const slug = state.slug;
+  const body = { ids: state.photos.map((p) => p.id), removed: state.removed };
+  reviewTimer = setTimeout(() => {
+    api(`/api/plans/${encodeURIComponent(slug)}/review`, { method: "PUT", body }).catch(() => {});
+  }, 300);
 }
 
 function removePhoto(p, reason) {

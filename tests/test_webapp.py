@@ -99,6 +99,18 @@ class WebAppTests(unittest.TestCase):
         first = plan["photos"][0]["id"]
         self.assertEqual(self.http.get(f"/plans/{slug}/thumbs/{first}.jpg").status_code, 200)
 
+        # chaque ✕ est retenu tout de suite, sans créer l'album ; « Annuler » le défait
+        from album_builder import taste
+        home = Path(self.tmp.name)
+        gone = plan["photos"][0]["id"]
+        review = {"ids": [p["id"] for p in plan["photos"][1:]], "removed": [{"id": gone, "reason": "gout"}]}
+        self.assertEqual(self.http.put(f"/api/plans/{slug}/review", json=review).status_code, 200)
+        self.assertIn(gone, taste.excluded(home))
+        self.assertIn(gone, taste.load_examples(home)["neg"])
+        self.assertEqual(self.http.get(f"/api/plans/{slug}").get_json()["review"]["removed"][0]["id"], gone)
+        self.http.put(f"/api/plans/{slug}/review", json={"ids": [p["id"] for p in plan["photos"]], "removed": []})
+        self.assertNotIn(gone, taste.excluded(home))
+
         # la personne retire une photo et prend une remplaçante
         ids = [p["id"] for p in plan["photos"][1:]] + [plan["reserve"][0]["id"], "inconnu"]
         job = self.wait(self.http.post("/api/apply", json={"slug": slug, "ids": ids, "name": "Mon album"}).get_json())
