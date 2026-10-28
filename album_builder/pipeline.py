@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
+
 from . import aesthetic, compose, people, scoring, taste, vision
 from .errors import AlbumError, Cancelled
 from .report import slugify, write_plan
@@ -286,7 +288,14 @@ def build_plan(
     all_parts: dict[str, dict] = {}
     cands: list[scoring.Candidate] = []
     banned = taste.excluded(workdir)
-    rejected = {"retirée avant": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
+    # les photos retirées, par jour : une quasi-jumelle (même série) ne doit pas revenir à leur place
+    by_id = {f.id: f for f in files}
+    banned_vecs: dict = {}
+    for fid in banned:
+        vec = (editor.get(fid) or {}).get("vec")
+        if vec and fid in by_id:
+            banned_vecs.setdefault(by_id[fid].when.date(), []).append(vec)
+    rejected = {"retirée avant": 0, "comme une photo retirée": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0}
     for f in files:
         entry = cache.get(f.id)
@@ -321,7 +330,10 @@ def build_plan(
         all_parts[f.id] = c.parts
         must_faces = [x for x, label in zip(faces, per_face) if label in params.must]
         area = float(feat["w"] * feat["h"]) or 1.0
-        if kind == "capture":
+        twins = banned_vecs.get(f.when.date())
+        if twins and c.meta["vec"] and max(float(np.dot(v, c.meta["vec"])) for v in twins) >= scoring.SAME_SERIES_COS:
+            rejected["comme une photo retirée"] += 1
+        elif kind == "capture":
             rejected["pas une photo"] += 1
         elif (c.meta["editor"] or {}).get("not_album", 0) > aesthetic.NOT_ALBUM_REJECT:
             rejected["pas pour un album"] += 1

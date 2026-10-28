@@ -32,6 +32,7 @@ PRINT_REJECT_SIDE = 600           # côté court en dessous (800 pour une image 
 SELFIE_PENALTY = 0.15             # quelqu'un d'autre (papa en selfie) au premier plan
 SAME_CONTENT_COS = (0.80, 0.95)   # CLIP : 0,80 = scène voisine, 0,95 = même scène (autre angle)
 SAME_SCENE_DUPLICATE = 0.93       # CLIP, photos à moins de 15 min : doublon (canapé, poussette…)
+SAME_SERIES_COS = 0.92            # CLIP, même jour qu'une photo retirée : sa jumelle ne revient pas
 ROUTINE_MAX = None                # plafond de routine : désactivé, le type de scène CLIP se trompe trop
                                   # (le biberon sur le canapé classé « repas », le turban « bain »)
 SAME_INSTANT_SECONDS = 600        # deux photos à moins de 10 min : même instant, on préfère varier
