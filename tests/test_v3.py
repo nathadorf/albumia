@@ -286,3 +286,37 @@ class TasteTests(unittest.TestCase):
             plan = Path(d) / "plan.json"
             plan.write_text(json.dumps({"photos": [{"id": "a"}], "reserve": [{"id": "b"}, {"id": "c"}]}))
             self.assertEqual(taste.seed_from_plan(Path(d), plan), (1, 2))
+
+
+class FinalTouchTests(unittest.TestCase):
+    def test_floor_leaves_weak_photos_out(self):
+        t = datetime(2023, 1, 1, 10)
+        good = [cand(i, t + timedelta(days=i), 0.8, dhash=h(i)) for i in range(5)]
+        weak = cand(99, datetime(2023, 6, 1, 10), 0.2, dhash=h(99))  # seul mois de juin
+        chosen = scoring.select_spread(good + [weak], 6, floor=0.3)
+        self.assertNotIn("id99", {c.file_id for c in chosen})
+        self.assertEqual(len(chosen), 5)
+
+    def test_floor_slot_goes_to_another_period(self):
+        t = datetime(2023, 1, 1, 10)
+        good = [cand(i, t + timedelta(days=3 * i), 0.8, dhash=h(i)) for i in range(8)]
+        weak = cand(99, datetime(2023, 6, 1, 10), 0.2, dhash=h(99))
+        chosen = scoring.select_spread(good + [weak], 6, floor=0.3)
+        self.assertEqual(len(chosen), 6)
+
+    def test_exclusion_list(self):
+        from album_builder import taste
+        with tempfile.TemporaryDirectory() as d:
+            taste.exclude(Path(d), ["a", "b"])
+            taste.exclude(Path(d), ["b", "c"])
+            self.assertEqual(taste.excluded(Path(d)), {"a", "b", "c"})
+
+    def test_taste_needs_good_cross_validation(self):
+        from album_builder import taste
+        import numpy as np
+        rng = np.random.default_rng(3)
+        editor = {f"p{i}": {"vec": (rng.normal(size=8)).tolist()} for i in range(40)}
+        with tempfile.TemporaryDirectory() as d:
+            taste.add_examples(Path(d), [f"p{i}" for i in range(20)], [f"p{i}" for i in range(20, 40)])
+            self.assertIsNone(taste.model_for(Path(d), editor))   # bruit : pas de goût fiable
+            self.assertIsNotNone(taste.model_for(Path(d), editor, min_auc=0))

@@ -592,10 +592,10 @@ function popover(anchor, ...children) {
 function closePopover() { document.querySelectorAll(".popover").forEach((x) => x.remove()); }
 
 const REASONS = [
-  ["pas-belle", "Pas belle (floue, sombre, ratée)"],
+  ["pas-belle", "Pas belle (floue, ratée, pas pour un album)"],
   ["doublon", "Déjà une photo de ce moment"],
   ["personnes", "Pas les bonnes personnes"],
-  ["gout", "Je ne l'aime pas"],
+  ["gout", "Je ne l'aime pas (ne plus me la proposer)"],
 ];
 function askReason(p, anchor) {
   popover(anchor, el("div", { class: "pop-title" }, "Pourquoi la retirer ? Albumia s'en souviendra."),

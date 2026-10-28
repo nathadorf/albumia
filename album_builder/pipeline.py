@@ -277,10 +277,14 @@ def build_plan(
     ref_sets = {n: [(e, dates.get(n, {}).get(photo)) for photo, e in v] for n, v in ref_photos.items()}
     refs_by_month: dict = {}
     cands: list[scoring.Candidate] = []
-    rejected = {"sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
+    banned = taste.excluded(workdir)
+    rejected = {"retirée avant": 0, "sans analyse": 0, "pas une photo": 0, "pas pour un album": 0, "trop petite pour l'impression": 0, "floue": 0, "personne absente": 0,
                 "personne trop petite": 0, "sans visage": 0}
     for f in files:
         entry = cache.get(f.id)
+        if f.id in banned:
+            rejected["retirée avant"] += 1
+            continue
         if not entry:
             rejected["sans analyse"] += 1
             continue
@@ -353,7 +357,10 @@ def build_plan(
     bucket = scoring.age_bucket(births[main]) if main else None
     if main:
         rep.note(f"Répartition selon l'âge de {main}.")
-    selected = scoring.select_spread(pool, params.count, bucket=bucket)
+    floor = scoring.quality_floor([c.score for c in pool])
+    selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor)
+    if len(selected) < params.count:
+        rep.note(f"{len(selected)} photos seulement : les autres étaient trop faibles pour un album.")
     chosen = {c.file_id for c in selected}
     reserve = sorted((c for c in pool if c.file_id not in chosen), key=lambda c: c.score, reverse=True)
     reserve = reserve[: params.reserve]

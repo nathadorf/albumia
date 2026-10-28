@@ -20,6 +20,8 @@ import numpy as np
 
 MIN_EXAMPLES = 8   # par classe, avant de faire confiance au goût appris
 L2 = 1.0           # régularisation : peu d'exemples, on reste prudent
+MIN_AUC = 0.70     # le goût ne compte que s'il prédit mieux que le critère « émotion » seul
+                   # (110 exemples : AUC ≈ 0,60, donc pas encore actif)
 
 
 def _path(workdir: Path) -> Path:
@@ -96,11 +98,35 @@ def _dataset(editor: dict, examples: dict) -> tuple[np.ndarray, np.ndarray, list
     return np.asarray(rows, dtype=float), np.asarray(ys, dtype=float), ids
 
 
-def model_for(workdir: Path, editor: dict) -> Taste | None:
-    X, y, _ = _dataset(editor, load_examples(workdir))
+def model_for(workdir: Path, editor: dict, min_auc: float = MIN_AUC) -> Taste | None:
+    examples = load_examples(workdir)
+    X, y, _ = _dataset(editor, examples)
     if len(y) == 0 or y.sum() < MIN_EXAMPLES or (len(y) - y.sum()) < MIN_EXAMPLES:
         return None
+    if min_auc and not cross_val_auc(editor, examples) >= min_auc:
+        return None
     return train(X, y)
+
+
+# ---- photos retirées pour de bon -------------------------------------------------------------
+def _excluded_path(workdir: Path) -> Path:
+    return workdir / ".cache" / "excluded.json"
+
+
+def excluded(workdir: Path) -> set[str]:
+    try:
+        return set(json.loads(_excluded_path(workdir).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
+def exclude(workdir: Path, ids: list[str]) -> None:
+    """Une photo retirée pour « pas belle » ou « je ne l'aime pas » ne revient plus dans les albums."""
+    if not ids:
+        return
+    path = _excluded_path(workdir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(excluded(workdir) | set(ids))), encoding="utf-8")
 
 
 def auc(scores, labels) -> float:
@@ -131,11 +157,15 @@ def main(argv=None) -> None:
     p.add_argument("--workdir", default=".")
     p.add_argument("--seed", metavar="PLAN_JSON", help="Ajoute une sélection faite à la main comme exemples")
     p.add_argument("--eval", action="store_true", help="Validation croisée (AUC) sur les exemples")
+    p.add_argument("--exclude", nargs="+", metavar="FILE_ID", help="Retire ces photos des albums pour de bon")
     args = p.parse_args(argv)
     workdir = Path(args.workdir)
     if args.seed:
         n_pos, n_neg = seed_from_plan(workdir, Path(args.seed))
         print(f"{n_pos} photos aimées, {n_neg} moins aimées ajoutées.")
+    if args.exclude:
+        exclude(workdir, args.exclude)
+        print(f"{len(args.exclude)} photo(s) retirée(s) pour de bon.")
     if args.eval:
         editor = json.loads((workdir / ".cache" / "editor.json").read_text(encoding="utf-8"))
         ex = load_examples(workdir)

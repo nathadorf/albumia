@@ -49,7 +49,7 @@ class Weights:
     resolution: float = 0.06          # assez grande pour un tirage
     beauty: float = 0.18              # œil d'éditeur : composition, lumière, sujet clair (CLIP)
     emotion: float = 0.12             # œil d'éditeur : joie, tendresse, regard (CLIP)
-    taste: float = 0.30               # goût appris sur les photos gardées / retirées (CLIP)
+    taste: float = 0.12               # goût appris (CLIP) : prudent tant qu'il y a peu d'exemples
     bonus: float = 0.16
 
 
@@ -399,14 +399,26 @@ def age_bucket(birth: date):
     return key
 
 
-def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25) -> list[Candidate]:
+QUALITY_FLOOR_PERCENTILE = 20     # les 20 % de photos les moins bien notées ne bouchent pas les trous
+
+
+def quality_floor(scores: list[float]) -> float | None:
+    return float(np.percentile(scores, QUALITY_FLOOR_PERCENTILE)) if len(scores) >= 10 else None
+
+
+def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float = 0.25,
+                  floor: float | None = None) -> list[Candidate]:
     """Choisit n photos qui racontent la période.
 
     1. Les places sont réparties entre les périodes (mois, ou tranches d'âge avec `bucket`).
     2. Dans chaque période, chaque moment a un plafond : 1 photo pour un instant isolé, jusqu'à 3
        pour un grand moment.
     3. On prend d'abord la meilleure note, en pénalisant ce qui ressemble à ce qui est déjà choisi.
+    4. Avec `floor`, une photo trop faible ne bouche pas un trou : la place passe à une autre
+       période, ou reste vide (un album plus court vaut mieux qu'une photo ratée).
     """
+    if floor is not None:
+        items = [c for c in items if c.score >= floor]
     bucket = bucket or (lambda c: (c.when.year, c.when.month))
     groups: dict = {}
     for c in items:
@@ -431,4 +443,10 @@ def select_spread(items: list[Candidate], n: int, bucket=None, diversity: float 
             chosen.append(best)
             pool.remove(best)
             left[moment_of[id(best)]] -= 1
+    if floor is not None and len(chosen) < n:  # places libres : les meilleures restantes, toutes périodes
+        rest = [c for c in items if c not in chosen]
+        while rest and len(chosen) < n:
+            best = max(rest, key=lambda c: c.score - diversity_penalty(c, chosen, diversity))
+            chosen.append(best)
+            rest.remove(best)
     return sorted(chosen, key=lambda c: c.when)
