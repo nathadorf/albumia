@@ -99,6 +99,15 @@ def judge_photos(files, cache, thumbs_dir: Path, editor_path: Path, model_dir: P
     return editor
 
 
+def must_missing(must, labels, known, per_face) -> bool:
+    """Une personne obligatoire manque. Un enfant qu'Albumia ne sait pas encore reconnaître à cet
+    âge (pas de référence proche) peut être n'importe quel visage inconnu de la photo."""
+    if any(m in known and m not in labels for m in must):
+        return True
+    unknown = [m for m in must if m not in known]
+    return bool(unknown) and sum(1 for label in per_face if not label) < len(unknown)
+
+
 MIN_THEMED = 8  # en dessous, un thème strict ne ferait qu'un album minuscule
 
 
@@ -405,7 +414,7 @@ def build_plan(
             rejected["trop petite pour l'impression"] += 1
         elif c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
             rejected["floue"] += 1
-        elif params.must and not all(m in labels for m in params.must):
+        elif params.must and must_missing(params.must, labels, refs_by_month[month], per_face):
             rejected["personne absente"] += 1
         elif must_faces and max(x["box"][2] * x["box"][3] for x in must_faces) / area < scoring.MIN_SUBJECT_AREA:
             rejected["personne trop petite"] += 1
@@ -464,7 +473,8 @@ def build_plan(
     bucket = scoring.age_bucket(births[main]) if main else None
     if main:
         rep.note(f"Répartition selon l'âge de {main}.")
-    floor = scoring.quality_floor([c.score for c in pool])
+    # peu de photos pour beaucoup de places : pas de seuil, sinon l'album sort raccourci
+    floor = scoring.quality_floor([c.score for c in pool]) if len(pool) >= 3 * params.count else None
     family = list(dict.fromkeys(params.must + params.bonus)) if params.family else None
     decor = scoring.DECOR_MAX_SHARE if wanted else None  # album de personnes : peu de décor
     selected = scoring.select_spread(pool, params.count, bucket=bucket, floor=floor, family=family,

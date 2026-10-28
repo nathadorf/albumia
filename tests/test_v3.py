@@ -575,3 +575,17 @@ class FamilyHolidayTests(unittest.TestCase):
         it = interpret("Souccot en famille", self.FAMILY, today=self.TODAY,
                        span=(date(2025, 10, 3), date(2025, 10, 16)))
         self.assertEqual(it.date_from, "2025-10-02")
+
+    def test_must_child_unknown_at_that_age_does_not_empty_the_album(self):
+        from album_builder.pipeline import must_missing
+
+        known = {"Perla": [1.0]}  # Eydel à 4 ans : pas de référence à cet âge
+        self.assertFalse(must_missing(["Eydel"], set(), known, [None]))       # un visage inconnu : peut-être elle
+        self.assertTrue(must_missing(["Eydel"], {"Perla"}, known, ["Perla"]))  # seulement Perla : non
+        self.assertTrue(must_missing(["Perla"], set(), known, [None]))         # Perla est connue : absente
+
+    def test_three_names_make_a_family_album(self):
+        it = interpret("Eydel, Nathanaël, Perla octobre 2025", self.FAMILY, today=self.TODAY)
+        self.assertTrue(it.family)
+        self.assertEqual(it.must, [])
+        self.assertEqual(it.bonus, ["Eydel", "Nathanaël", "Perla"])

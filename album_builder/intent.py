@@ -284,11 +284,16 @@ def interpret(text: str, people: list[str], selected: list[str] | None = None,
             found.append((m.start(), p))
     mentioned = [p for _, p in sorted(found)]
     targets = mentioned + [p for p in (selected or []) if p not in mentioned]
-    it.family = bool(FAMILY.search(t))
+    # « Eydel, Nathanaël, Perla » : 3 personnes ou plus, c'est un album de famille, pas
+    # « Eydel sur chaque photo »
+    it.family = bool(FAMILY.search(t)) or (len(targets) >= 3 and not any(w in t for w in TOGETHER))
     if it.family:
         # toute la famille : chaque photo avec au moins l'un d'eux, les photos de groupe en premier
-        it.must = mentioned if len(mentioned) < len(people) else []
-        it.bonus = [p for p in people if p not in it.must]
+        if FAMILY.search(t):
+            it.must = mentioned if len(mentioned) < len(people) else []
+            it.bonus = [p for p in people if p not in it.must]
+        else:
+            it.must, it.bonus = [], targets
         it.understood.append("en famille" + (f", avec {', '.join(it.must)} sur chaque photo" if it.must else ""))
     elif targets:
         if len(targets) == 1 or any(w in t for w in TOGETHER):
