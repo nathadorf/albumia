@@ -94,6 +94,16 @@
         <input id="folder" type="url" placeholder="https://drive.google.com/drive/folders/…" autocomplete="off">
       </div>
       <div class="folder-status" id="folder-status"></div>
+      <div class="gphotos">
+        <p class="sub">Tes photos sont dans Google Photos ? Choisis-les directement (2 000 au plus à chaque fois, tu peux recommencer pour en ajouter).</p>
+        <div class="gphotos-row">
+          <button type="button" class="btn" id="btn-gphotos">Choisir dans Google Photos</button>
+          <a class="btn primary" id="gphotos-open" target="_blank" rel="noopener" hidden>Ouvrir Google Photos ↗</a>
+          <button type="button" class="btn small" id="btn-gphotos-clear" hidden>Vider</button>
+        </div>
+        <div class="folder-status" id="gphotos-status"></div>
+        <label class="toggle" id="gphotos-use-wrap" hidden><input type="checkbox" id="gphotos-use"><span>Faire l'album avec mes photos Google Photos</span></label>
+      </div>
     </div>
 
     <div class="cta">

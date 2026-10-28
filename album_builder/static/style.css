@@ -240,3 +240,6 @@ dialog::backdrop { background: rgba(40, 30, 25, .45); }
 .group-row { display: flex; gap: 8px; margin-top: 8px; }
 .group-row input { padding: 7px 10px; }
 .ok-line { color: var(--ok); margin: 0; }
+
+.gphotos { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.gphotos-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; }

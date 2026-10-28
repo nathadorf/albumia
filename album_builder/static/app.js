@@ -101,7 +101,7 @@ async function boot() {
   $("#account").hidden = false;
   $("#account").textContent = s.email ? `Connecté : ${s.email}` : "Google Drive connecté";
   $("#claude-toggle").hidden = !s.claude;
-  await Promise.all([loadPeople(), loadThemes()]);
+  await Promise.all([loadPeople(), loadThemes(), loadGphotos()]);
   loadPastAlbums();
   restoreForm();
   show("screen-form");
@@ -433,9 +433,69 @@ async function checkFolder() {
   updateBuildButton();
 }
 
+// --- Google Photos : sélecteur officiel de Google, photos ajoutées sélection après sélection
+function renderGphotos(sum) {
+  state.gphotos = sum;
+  const has = sum && sum.count > 0;
+  $("#gphotos-status").className = "folder-status" + (has ? " ok" : "");
+  $("#gphotos-status").textContent = has
+    ? `✓ ${sum.count} photos de Google Photos, du ${fmtDate(sum.from)} au ${fmtDate(sum.to)}`
+    : "";
+  $("#btn-gphotos").textContent = has ? "Ajouter d'autres photos" : "Choisir dans Google Photos";
+  $("#btn-gphotos-clear").hidden = !has;
+  $("#gphotos-use-wrap").hidden = !has;
+  if (!has) $("#gphotos-use").checked = false;
+  updateBuildButton();
+}
+async function loadGphotos() {
+  try { renderGphotos(await api("/api/gphotos")); } catch { /* pas grave */ }
+  $("#gphotos-use").checked = !!(state.gphotos && state.gphotos.count) && store.get("source", "") === "gphotos";
+  updateBuildButton();
+}
+$("#gphotos-use").addEventListener("change", () => { store.set("source", $("#gphotos-use").checked ? "gphotos" : "drive"); updateBuildButton(); });
+$("#btn-gphotos-clear").addEventListener("click", async () => {
+  if (!confirm("Oublier les photos choisies dans Google Photos ? (Rien n'est effacé dans Google Photos.)")) return;
+  renderGphotos(await api("/api/gphotos", { method: "DELETE" }));
+});
+$("#btn-gphotos").addEventListener("click", async () => {
+  const status = $("#gphotos-status"), btn = $("#btn-gphotos"), open = $("#gphotos-open");
+  btn.disabled = true;
+  status.className = "folder-status";
+  status.textContent = "Connexion à Google Photos… (la première fois, Google te demande ton accord dans un nouvel onglet)";
+  try {
+    const job = await waitJob(await api("/api/gphotos/session", { method: "POST" }));
+    if (job.state !== "done") throw new Error(job.error ? job.error.message : "Google Photos ne s'est pas ouvert.");
+    const { id, uri } = job.result;
+    open.href = uri; open.hidden = false;
+    status.textContent = "Clique sur « Ouvrir Google Photos », coche tes photos, puis clique sur « OK » en haut à droite. Je t'attends ici.";
+    let ready = false;
+    for (let i = 0; i < 900 && !ready; i++) {  // jusqu'à 30 minutes
+      await sleep(2000);
+      ready = (await api(`/api/gphotos/session/${id}`)).ready;
+    }
+    open.hidden = true;
+    if (!ready) throw new Error("Je n'ai pas reçu ta sélection. Recommence quand tu veux.");
+    const imp = await waitJob(await api(`/api/gphotos/import/${id}`, { method: "POST" }), (j) => {
+      status.textContent = j.total ? `Je récupère les aperçus : ${j.done} / ${j.total}…` : "Je récupère tes photos…";
+    });
+    if (imp.state !== "done") throw new Error(imp.error ? imp.error.message : "La récupération a échoué.");
+    renderGphotos(imp.result);
+    $("#gphotos-use").checked = true; store.set("source", "gphotos"); updateBuildButton();
+    toast(`${imp.result.picked} photos reçues` + (imp.result.failed ? ` (${imp.result.failed} sans aperçu)` : ""));
+  } catch (e) {
+    status.className = "folder-status bad";
+    status.textContent = e.message;
+  } finally {
+    btn.disabled = false; open.hidden = true;
+  }
+});
+
+const useGphotos = () => $("#gphotos-use").checked && state.gphotos && state.gphotos.count > 0;
+
 function updateBuildButton() {
-  $("#btn-build").disabled = !state.folder.ok;
-  $("#build-hint").textContent = state.folder.ok
+  const ready = state.folder.ok || useGphotos();
+  $("#btn-build").disabled = !ready;
+  $("#build-hint").textContent = ready
     ? "Rien n'est créé dans ton Drive avant que tu aies validé la sélection."
     : "Colle d'abord le lien du dossier de photos (étape 3).";
 }
@@ -471,7 +531,7 @@ function buildRequest(extra = {}) {
   const names = [...state.selected];
   return {
     prompt: $("#prompt").value,
-    folder: state.folder.link,
+    folder: useGphotos() ? "gphotos" : state.folder.link,
     name: $("#f-name").value,
     count: Number($("#f-count").value) || 50,
     date_from: $("#f-from").value || null,

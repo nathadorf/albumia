@@ -134,6 +134,8 @@ def album_theme(params, files, editor, model_dir: Path, rep) -> dict[str, tuple[
 
 def parse_folder_id(value: str) -> str:
     value = (value or "").strip()
+    if value == "gphotos":  # photos choisies dans Google Photos (voir gphotos.py)
+        return value
     m = re.search(r"/folders/([A-Za-z0-9_-]+)", value) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", value)
     if m:
         return m.group(1)

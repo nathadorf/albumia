@@ -29,6 +29,7 @@ OUT = ROOT / "out"
 SETTINGS = ROOT / ".cache" / "settings.json"
 CREDENTIALS = ROOT / "credentials.json"
 TOKEN_LIGHT, TOKEN_FULL = ROOT / "token.json", ROOT / "token_full.json"
+TOKEN_PHOTOS = ROOT / "token_photos.json"
 APP_FOLDER_NAME = "Albums (Albumia)"
 
 app = Flask(__name__, static_folder=None)
@@ -369,15 +370,36 @@ def face_groups():
         else:
             clusters.append({"key": key, "center": f["emb"], "items": [f]})
     clusters = sorted((c for c in clusters if len(c["items"]) >= 3), key=lambda c: len(c["items"]), reverse=True)[:30]
-    for c in clusters:  # qui ça pourrait être, à cet âge-là (jamais quelqu'un qui n'était pas encore né)
+    # qui ça pourrait être, à cet âge-là : jamais quelqu'un qui n'était pas encore né, et l'âge
+    # apparent sur la photo (bébé ou plus grand, d'après l'œil d'éditeur) départage frère et sœur
+    from . import aesthetic
+
+    editor = pipeline._load_cache(ROOT / ".cache" / "editor.json")
+    ages = {k: aesthetic.theme_vector(ROOT / "models", prompt, print) for k, prompt in (
+        ("baby", "a photo of a baby under one year old"), ("older", "a photo of a toddler, two or three years old"))}
+    for c in clusters:
         year, half = c["key"]
         c["period"] = f"{'janvier-juin' if half == 1 else 'juillet-décembre'} {year}" if year else ""
-        when = date(year, 4 if half == 1 else 10, 1) if year else None
+        whens = sorted(f["when"] for f in c["items"] if f.get("when"))
+        when = date.fromisoformat(whens[len(whens) // 2]) if whens else None
         known = known_at(when) if when else {}
-        options = [(float(np.dot(c["center"], v)), n) for n, v in known.items()
-                   if not (n in births and when and births[n] > when)]
-        best = max(options, default=(0.0, ""))
-        c["guess"] = best[1] if best[0] >= 0.30 else ""
+        vecs = [editor[f["file"]]["vec"] for f in c["items"] if (editor.get(f["file"]) or {}).get("vec")]
+        baby = None
+        if vecs and all(v is not None for v in ages.values()):
+            mean = np.mean(np.asarray(vecs, dtype=float), axis=0)
+            baby = float(mean @ ages["baby"]) > float(mean @ ages["older"])
+
+        def plausible(n):
+            if n not in births or not when:
+                return True
+            if births[n] > when:
+                return False
+            months = scoring.months_between(births[n], when)
+            return baby is None or (months <= 15 if baby else months >= 9)
+
+        options = sorted(((float(np.dot(c["center"], v)), n) for n, v in known.items() if plausible(n)), reverse=True)
+        sure = options and options[0][0] >= 0.30 and (len(options) < 2 or options[0][0] - options[1][0] >= 0.05)
+        c["guess"] = options[0][1] if sure else ""
     _face_groups.clear()
     out = []
     for c in clusters:
@@ -444,6 +466,63 @@ def themes():
     return jsonify([{"key": k, "label": v[1], "strict": v[3]} for k, v in intent.THEMES.items()])
 
 
+# --------------------------------------------------------------------------- API : Google Photos
+def picker():
+    """Sélecteur Google Photos ; la 1re fois, Google demande l'autorisation dans le navigateur."""
+    from .drive import get_credentials
+    from .gphotos import SCOPES, PickerClient
+
+    if not CREDENTIALS.exists():
+        raise AlbumError("Il manque le fichier credentials.json.", code="no_credentials")
+    return PickerClient(get_credentials(CREDENTIALS, TOKEN_PHOTOS, SCOPES))
+
+
+@app.get("/api/gphotos")
+def gphotos_summary():
+    from . import gphotos
+
+    return jsonify(gphotos.summary(ROOT))
+
+
+@app.delete("/api/gphotos")
+def gphotos_clear():
+    import shutil
+
+    from . import gphotos
+
+    gphotos.save_store(ROOT, {})
+    shutil.rmtree(ROOT / ".cache" / "gphotos", ignore_errors=True)
+    return jsonify(gphotos.summary(ROOT))
+
+
+@app.post("/api/gphotos/session")
+def gphotos_session():
+    def work(job: Job):
+        job.step(1, "Ouverture de Google Photos…")
+        session = picker().create_session()
+        return {"id": session["id"], "uri": session["pickerUri"].rstrip("/") + "/autoclose",
+                "poll": session.get("pollingConfig", {})}
+
+    return jsonify(start_job("gphotos-session", work).to_dict())
+
+
+@app.get("/api/gphotos/session/<session_id>")
+def gphotos_poll(session_id):
+    session = picker().get_session(session_id)
+    return jsonify({"ready": bool(session.get("mediaItemsSet"))})
+
+
+@app.post("/api/gphotos/import/<session_id>")
+def gphotos_import(session_id):
+    from . import gphotos
+
+    def work(job: Job):
+        job.step(1, "Je récupère les aperçus de tes photos…")
+        return gphotos.import_session(picker(), session_id, ROOT, reporter=job)
+
+    return jsonify(start_job("gphotos-import", work).to_dict())
+
+
 @app.post("/api/folder")
 def check_folder():
     link = (request.get_json(silent=True) or {}).get("link", "")
@@ -467,9 +546,13 @@ def _date(value: str | None, end: bool = False) -> datetime | None:
 
 @app.post("/api/build")
 def build():
+    from . import gphotos
+
     b = request.get_json(silent=True) or {}
     folder = (b.get("folder") or "").strip()
     pipeline.parse_folder_id(folder)
+    if folder == gphotos.SOURCE and not gphotos.load_store(ROOT):
+        raise AlbumError("Choisis d'abord des photos dans Google Photos.", code="no_gphotos")
     name = (b.get("name") or "").strip() or "Mon album"
     weights = learn.learned_weights(ROOT)  # ajustés d'après les corrections passées
     if b.get("favor_smiles"):
@@ -485,7 +568,7 @@ def build():
         theme=b.get("theme") if b.get("theme") in intent.THEMES else "",
         theme_strict=bool(b.get("theme_strict")), family=bool(b.get("family")),
     )
-    client = drive()
+    client = gphotos.GooglePhotosSource(ROOT) if folder == gphotos.SOURCE else drive()
 
     def work(job: Job):
         plan_path = pipeline.build_plan(client, params, ROOT, OUT, REFS, job, job.cancel)
@@ -574,6 +657,11 @@ def apply():
     removed = [{**known[r["id"]], "reason": r.get("reason", "gout")}
                for r in b.get("removed", []) if r.get("id") in known]
     name = (b.get("name") or "").strip() or plan["album_name"]
+    if any(str(p["id"]).startswith("gp_") for p in photos):
+        raise AlbumError(
+            "Pour l'instant, un album fait avec des photos de Google Photos reste en aperçu : "
+            "Google ne permet pas de les ranger dans un album Drive.", code="gphotos_preview",
+        )
     full = bool(b.get("full"))
     client = drive(full=True if full else None)
 
