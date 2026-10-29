@@ -21,7 +21,7 @@ non technique. Tout texte visible est en français, au tutoiement, sans jargon.
 - `album_builder/pipeline.py` : build_plan / apply_plan (page et CLI). 1re passe rapide (CLIP ViT-B/32) sur
   toutes les photos, 2e passe précise (ViT-L/14) sur les meilleures candidates seulement, puis le tri de photographe
 - `album_builder/curate.py` : tri de photographe (un moment = une photo, la prise la plus naturelle, jamais deux
-  fois la même pose, 2ᵉ prise des moments forts si le dossier est petit, chapitres, plan large d'ouverture, couverture,
+  fois la même pose, chapitres, plan large d'ouverture, couverture,
   photos imposées pour que chacun soit présent) ;
   `python -m album_builder.curate --compare auto/plan.json main/plan.json`, `--takes plan.json…` (jeux de poids
   `TAKE_PRESETS` + poids ajustés) et `--pairs plan.json…` (paires proches gardées / retirées ; règle « même pose »)
@@ -31,6 +31,10 @@ non technique. Tout texte visible est en français, au tutoiement, sans jargon.
 - `album_builder/scenes.py` (description de chaque photo, « sans intérêt »), `aesthetic.py` (CLIP), `taste.py`
   (goût appris : `python -m album_builder.taste --eval`), `compose.py`, `learn.py`, `hebcal.py`, `gphotos.py`
 - `album_builder/intent.py`, `people.py`, `drive.py`, `vision.py`, `report.py`, `cli.py`
+
+## Réglé sur ses relectures
+- Une seule photo par moment : 2ᵉ prise des moments forts (`SECOND_TAKES`) et remplissage d'un petit dossier avec des
+  prises en plus (`FILL_WITH_EXTRA_TAKES`) sont éteints (il en a retiré 5 sur 7 en « doublon »). Album court plutôt que redite.
 
 ## Tests
 `python -m unittest discover -s tests -t .`

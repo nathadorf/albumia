@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -83,6 +84,7 @@ class TakeTests(unittest.TestCase):
         together = photo(2, T0 + timedelta(minutes=1), 0.5, vec_l=A, labels={"Eydel", "Perla"})
         self.assertEqual(curate.heroes(curate.find_moments([alone, together]))[0][0].file_id, "id2")
 
+    @mock.patch.object(curate, "SECOND_TAKES", True)
     def test_a_strong_moment_gives_a_second_photo_with_someone_else(self):
         takes = [photo(i, T0 + timedelta(minutes=i), 0.6 - 0.005 * i, vec_l=A, labels={"Eydel"}, frontal=1.0)
                  for i in range(5)]
@@ -93,10 +95,14 @@ class TakeTests(unittest.TestCase):
         weak = curate.find_moments([photo(i, T0 + timedelta(minutes=i), vec_l=A, labels={"Eydel"}) for i in range(4)])
         self.assertEqual(len(curate.heroes(weak)[0]), 1)
 
+    def test_second_takes_are_off_by_default(self):
+        self.assertFalse(curate.SECOND_TAKES or curate.FILL_WITH_EXTRA_TAKES)
+
     def test_five_identical_takes_stay_one_photo(self):
         takes = [photo(i, T0 + timedelta(minutes=i), 0.6, vec_l=A, labels={"Eydel"}) for i in range(6)]
         self.assertEqual(len(curate.heroes(curate.find_moments(takes))[0]), 1)
 
+    @mock.patch.object(curate, "SECOND_TAKES", True)
     def test_removed_takes_count_for_the_strength_of_a_moment_but_are_never_offered(self):
         shots = ["gros plan", "plan moyen"]
         takes = [photo(i, T0 + timedelta(minutes=i), 0.7 - 0.05 * i, vec_l=A, labels={"Eydel"}, shot=shots[i % 2])

@@ -886,8 +886,9 @@ def build_plan(
     selected, used = select_moments(pool, params.count, expected, pinned | seeds, rules, cap, wide_n)
     # tous les moments y sont et il reste des places : les moments forts donnent une prise de plus
     decor_n = max(1, int(params.count * decor)) if decor else None
-    selected = curate.add_extra_takes(selected, others, {k: len(g) for k, g in enumerate(groups)}, params.count,
-                                      decor_max=decor_n)
+    if curate.FILL_WITH_EXTRA_TAKES:
+        selected = curate.add_extra_takes(selected, others, {k: len(g) for k, g in enumerate(groups)}, params.count,
+                                          decor_max=decor_n)
     if len(selected) < params.count and params.theme_strict and themed:
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:

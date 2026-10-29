@@ -43,6 +43,7 @@ MOMENT_SPAN = 1800                    # … et un moment dure 30 minutes au plus
 MOMENT_COS = {"L": 0.80, "B": 0.75}   # scène voisine (œil plus précis / œil habituel)
 POSE_COS = {"L": 0.88, "B": 0.93}     # même pose : ses paires gardées à la main sont à 0,86 au plus
 SAME_FRAME_BITS = 4                   # dhash : même cadrage (copie, rafale serrée)
+SECOND_TAKES = False                  # éteint : ses 5 « doublons » sur 7 retraits étaient la 2e photo d'un moment fort
 STRONG_TAKES = 5                      # un moment de 5 prises ou plus peut donner une 2e photo…
 SECOND_TAKE_SLACK = 0.12              # … si elle apporte quelqu'un d'autre ou un autre plan
 # part des paires (prise gardée, prise retirée en « doublon ») où la prise gardée est la meilleure, sur 35 paires :
@@ -185,7 +186,7 @@ def heroes(groups: list[list[Candidate]], pinned=frozenset()) -> tuple[list[Cand
         keep = [c for c in ranked if c.file_id in pinned]
         if not keep:
             keep = [ranked[0]]
-            if len(group) >= STRONG_TAKES and len(ranked) > 1:
+            if SECOND_TAKES and len(group) >= STRONG_TAKES and len(ranked) > 1:
                 second = _second_take(ranked)
                 if second is not None:
                     keep.append(second)
@@ -265,6 +266,9 @@ def coverage_seeds(pool: list[Candidate], family: list[str], babies=(), pinned=f
 
 
 # ---- album plus court que demandé -----------------------------------------------------------
+# Éteint : à sa relecture d'« Octobre 2025 en famille » il a retiré 5 « doublons » sur 7, presque toujours la 2e photo d'un
+# moment ajoutée pour remplir l'album. Il préfère un album plus court, une photo par moment.
+FILL_WITH_EXTRA_TAKES = False
 EXTRA_POSE_COS = {"L": 0.93, "B": 0.97}   # une prise en plus doit être une autre image (0,96 et plus : la même)
 EXTRA_STRENGTH = 0.04                     # à valeur égale, les moments qui ont donné le plus de prises d'abord
 EXTRA_SAME_FRAME_BITS = 10                # sans vecteur : deux cadrages à 10 bits (dhash) ou moins sont la même image
