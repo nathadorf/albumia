@@ -110,8 +110,9 @@ def look_closer(ids, thumbs_dir: Path, editor_path: Path, editor: dict, model_di
     eye = aesthetic.load_large(model_dir, rep.note)
     if eye is None:
         return
-    minutes = max(1, round(len(todo) * 2 / 60))
-    rep.note(f"Regard plus précis sur {len(todo)} photos (une seule fois, environ {minutes} min)…")
+    minutes = round(len(todo) * 0.4 / 60)      # 0,17 s par photo mesurées sur son PC, on garde de la marge
+    rep.note(f"Regard plus précis sur {len(todo)} photos (une seule fois, "
+             + (f"environ {minutes} min" if minutes >= 1 else "moins d'une minute") + ")…")
     for n, fid in enumerate(todo, 1):
         if cancel.is_set():
             break
