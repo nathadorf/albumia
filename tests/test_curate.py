@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from album_builder import curate, scoring
-from tests.test_scoring import cand
+from tests.test_scoring import cand, face
 
 
 def unit(*xs):
@@ -145,7 +145,8 @@ class RuleTests(unittest.TestCase):
         pool = [photo(i, T0 + timedelta(hours=3 * i), 0.9 - 0.01 * i, shot="scène") for i in range(6)]
         pool += [photo(10 + i, T0 + timedelta(hours=40 + 3 * i), 0.5, shot="plan moyen") for i in range(6)]
         chosen = scoring.select_spread(pool, 8, wide_max=curate.wide_cap(8))
-        self.assertEqual(sum(1 for c in chosen if c.meta["shot"] == "scène"), 2)
+        self.assertEqual(sum(1 for c in chosen if c.meta["shot"] == "scène"), curate.wide_cap(8))
+        self.assertLess(curate.wide_cap(8), 6)
         self.assertEqual(len(chosen), 8)
 
     def test_a_big_outing_made_of_many_takes_deserves_more_than_one_photo(self):
@@ -171,7 +172,7 @@ class RuleTests(unittest.TestCase):
     def test_caps_scale_with_the_album(self):
         self.assertEqual(curate.scene_cap(31), 2)
         self.assertEqual(curate.scene_cap(100), 8)
-        self.assertEqual(curate.wide_cap(31), 8)
+        self.assertEqual(curate.wide_cap(31), 13)
 
 
 class ExtraTakesTests(unittest.TestCase):
@@ -214,6 +215,28 @@ class ExtraTakesTests(unittest.TestCase):
             flawed.append(c)
         out = curate.add_extra_takes(self.heroes, {0: [same] + flawed, 1: []}, {0: 60, 1: 1}, 6)
         self.assertEqual(len(out), 2)
+
+    def test_when_still_short_another_view_of_a_strong_moment_is_enough(self):
+        view = self.take(10, 0, self.base(2), labels={"Eydel"}, shot="plan moyen")             # rien de neuf, autre vue
+        copy = self.take(11, 0, unit(1, 0.1, *[0] * 14), labels={"Eydel"}, shot="plan moyen")  # quasi la même image
+        out = curate.add_extra_takes(self.heroes, {0: [view, copy], 1: []}, {0: 30, 1: 1}, 5)
+        self.assertEqual({c.file_id for c in out}, {"id1", "id2", "id10"})
+
+    def test_someone_new_comes_before_another_view_of_the_same_people(self):
+        view = self.take(10, 0, self.base(2), labels={"Eydel"}, shot="plan moyen", score=0.9)
+        new = self.take(11, 0, self.base(3), labels={"Eydel", "Perla"}, shot="plan moyen", score=0.5)
+        out = curate.add_extra_takes(self.heroes, {0: [view, new], 1: []}, {0: 5, 1: 1}, 3)
+        self.assertEqual({c.file_id for c in out} - {"id1", "id2"}, {"id11"})     # 5 prises : 2 photos au plus
+
+    def test_faceless_photos_stay_under_their_ceiling(self):
+        faceless = self.take(10, 0, self.base(2), labels={"Eydel", "Perla"}, shot="scène")
+        faced = self.take(11, 0, self.base(3), labels={"Eydel", "Perla"}, shot="scène", score=0.4)
+        faced.feat["faces"] = [face()]
+        others = {0: [faceless, faced], 1: []}
+        capped = curate.add_extra_takes(self.heroes, others, {0: 30, 1: 1}, 5, decor_max=2)   # les 2 héros n'ont pas de visage
+        self.assertEqual({c.file_id for c in capped} - {"id1", "id2"}, {"id11"})
+        free = curate.add_extra_takes(self.heroes, others, {0: 30, 1: 1}, 5)
+        self.assertIn("id10", {c.file_id for c in free})
 
     def test_the_strongest_moment_comes_first(self):
         weak = self.take(10, 0, self.base(2), labels={"Eydel", "Perla"}, shot="scène", score=0.7)
@@ -525,6 +548,8 @@ class TakesReportTests(unittest.TestCase):
         self.assertGreater(out["weights"]["emotion_l"], 0)
         self.assertLess(out["weights"]["eyes"], 0)
         self.assertTrue(any("Réglages" in line for line in lines))
+        self.assertEqual(out["held_out"], 1.0)                              # des paires nettes : trouvées sans elles aussi
+        self.assertTrue(any("mise de côté" in line for line in lines))
 
     def test_removed_duplicates_not_grouped_with_the_kept_photo_are_counted(self):
         item = lambda i, minutes: {"id": f"p{i}", "name": f"IMG_{i}", "score": 0.5, "parts": {}, "people": [],

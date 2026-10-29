@@ -194,9 +194,12 @@ def previous_review(out_dir: Path) -> tuple[set[str], set[str]]:
     return set(review.get("ids", [])) - removed, removed
 
 
-def family_removals(out_root: Path, slug: str) -> set[str]:
+def family_removals(out_root: Path, slug: str, people=()) -> set[str]:
     """Photos retirées pour « pas les bonnes personnes » d'un autre album « en famille » : on y attend les mêmes
-    personnes, la même erreur se répète ici (papa sur son téléphone revenait d'un album à l'autre)."""
+    personnes, la même erreur se répète ici (papa sur son téléphone revenait d'un album à l'autre).
+
+    Un autre album compte comme « en famille » s'il l'était (`settings.family`) ou s'il nommait au moins trois des
+    mêmes personnes que celui-ci (`people`) : les albums relus avant qu'on note « en famille » ne s'y connaissaient pas."""
     gone: set[str] = set()
     for path in out_root.glob("*/plan.json"):
         if path.parent.name == slug:
@@ -205,7 +208,9 @@ def family_removals(out_root: Path, slug: str) -> set[str]:
             plan = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if (plan.get("settings") or {}).get("family"):
+        settings = plan.get("settings") or {}
+        named = set(settings.get("must") or []) | set(settings.get("bonus") or [])
+        if settings.get("family") or len(named & set(people)) >= 3:
             gone |= {r["id"] for r in (plan.get("review") or {}).get("removed", []) if r.get("reason") == "personnes"}
     return gone
 
@@ -419,21 +424,26 @@ def left_out(selected, pool, others, limits=None) -> dict[str, dict]:
     return out
 
 
-def select_moments(pool, count: int, expected: int, pinned, rules: dict, cap: int | None, wide: int | None) -> list:
+def select_moments(pool, count: int, expected: int, pinned, rules: dict, cap: int | None, wide: int | None) -> tuple:
     """Les règles du photographe d'abord ; tant qu'il reste des moments sans photo, on les assouplit (la même
     pose un peu plus près, deux photos de plus par activité ou en plan large), puis on les lève pour les
     prendre tous : quand le dossier est petit, chaque moment compte (la sélection à la main de la famille
-    les gardait). Les photos déjà choisies restent."""
+    les gardait). Les photos déjà choisies restent.
+
+    Renvoie (les photos, les plafonds de la dernière passe : scene, wide). Ceux que la dernière passe a levés
+    ne sont pas ce qui a écarté une photo (le journal `rejected.json` ne doit pas les citer)."""
     relaxed = {k: v + 0.05 for k, v in curate.POSE_COS.items()}
     selected: list = []
+    used: dict = {}
     for pose, scene_limit, wide_limit in ((curate.POSE_COS, cap, wide),
                                           (relaxed, cap and cap + 2, wide and wide + 2), (None, None, None)):
         selected = scoring.select_spread(
             pool, count, pinned=set(pinned) | {c.file_id for c in selected}, pose_cos=pose,
             scene_cap=scene_limit, scene_exempt=scenes.GENERIC, wide_max=wide_limit, **rules)
+        used = {"scene": scene_limit, "wide": wide_limit}
         if len(selected) >= expected:
             break
-    return selected
+    return selected, used
 
 
 def refine_with_large_eye(short, examples, editor, model_dir: Path, rep, rate, all_parts, rejected, pinned,
@@ -639,7 +649,7 @@ def build_plan(
     pinned, banned_here = previous_review(out_root / slugify(params.name))
     banned |= banned_here
     if params.family:
-        banned |= family_removals(out_root, slugify(params.name))
+        banned |= family_removals(out_root, slugify(params.name), set(params.must) | set(params.bonus))
     # les photos retirées « pas belle » / « goût », par jour : leur quasi-jumelle (même série) ne revient
     # pas à leur place. Pas pour un « doublon » : sa jumelle est justement la photo qu'on a gardée.
     by_id = {f.id: f for f in files}
@@ -867,9 +877,11 @@ def build_plan(
     capped = wanted and (not params.theme or params.theme in intent.HOLIDAYS)
     cap = curate.scene_cap(expected) if capped else None
     wide_n = curate.wide_cap(expected) if wanted else None
-    selected = select_moments(pool, params.count, expected, pinned | seeds, rules, cap, wide_n)
+    selected, used = select_moments(pool, params.count, expected, pinned | seeds, rules, cap, wide_n)
     # tous les moments y sont et il reste des places : les moments forts donnent une prise de plus
-    selected = curate.add_extra_takes(selected, others, {k: len(g) for k, g in enumerate(groups)}, params.count)
+    decor_n = max(1, int(params.count * decor)) if decor else None
+    selected = curate.add_extra_takes(selected, others, {k: len(g) for k, g in enumerate(groups)}, params.count,
+                                      decor_max=decor_n)
     if len(selected) < params.count and params.theme_strict and themed:
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:
@@ -880,8 +892,7 @@ def build_plan(
     members = family or list(refs)
     kids = [m for m in members if m in births and scoring.months_between(births[m], end_day) < 18 * 12]
     plan_layout = curate.layout(selected, reserve, members, kids)
-    limits = {"scene": cap, "wide": wide_n, "meal": scenes.MEAL_MAX, "selfie": rules["selfie_max"],
-              "decor": max(1, int(params.count * decor)) if decor else None}
+    limits = {**used, "meal": scenes.MEAL_MAX, "selfie": rules["selfie_max"], "decor": decor_n}
     log.update(left_out(selected, pool, others, limits))
     _save_cache(workdir / ".cache" / "rejected.json", log)
     chosen_ids = {c.file_id for c in selected}

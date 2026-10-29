@@ -393,6 +393,17 @@ class ShortlistAndFlagsTests(unittest.TestCase):
             (root / "casse").mkdir()
             (root / "casse" / "plan.json").write_text("{")
             self.assertEqual(pipeline.family_removals(root, "souccot"), {"papa"})
+            # un album relu avant qu'on note « en famille » : il l'est s'il nommait les mêmes personnes
+            (root / "ancien").mkdir()
+            (root / "ancien" / "plan.json").write_text(json.dumps({
+                "settings": {"must": [], "bonus": ["Eydel", "Arié", "Hillel", "Perla", "Nathanaël"]},
+                "review": {"removed": [{"id": "inconnu", "reason": "personnes"}, {"id": "flou2", "reason": "pas-belle"}]}}))
+            (root / "duo").mkdir()
+            (root / "duo" / "plan.json").write_text(json.dumps({
+                "settings": {"bonus": ["Eydel", "Arié"]}, "review": {"removed": [{"id": "dos", "reason": "personnes"}]}}))
+            family = {"Eydel", "Arié", "Hillel", "Perla", "Nathanaël"}
+            self.assertEqual(pipeline.family_removals(root, "souccot", family), {"papa", "inconnu"})
+            self.assertEqual(pipeline.family_removals(root, "souccot", {"Eydel", "Arié"}), {"papa"})
 
     def test_copy_of_names_the_photo_that_absorbed_a_copy(self):
         from album_builder import pipeline
@@ -435,12 +446,15 @@ class ShortlistAndFlagsTests(unittest.TestCase):
                       labels={"Eydel"})
             c.meta["moment"] = i
             pool.append(c)
-        strict = pipeline.select_moments(pool, 10, expected=2, pinned=set(), rules={}, cap=2, wide=2)
+        strict, strict_limits = pipeline.select_moments(pool, 10, expected=2, pinned=set(), rules={}, cap=2, wide=2)
         self.assertEqual(len(strict), 2)                 # si l'on se contente de 2, les plafonds suffisent
-        full = pipeline.select_moments(pool, 10, expected=10, pinned=set(), rules={}, cap=2, wide=2)
+        self.assertEqual(strict_limits, {"scene": 2, "wide": 2})
+        full, full_limits = pipeline.select_moments(pool, 10, expected=10, pinned=set(), rules={}, cap=2, wide=2)
         self.assertEqual(len(full), 10)                  # sinon on assouplit puis on lève, sans rien perdre
-        middle = pipeline.select_moments(pool, 10, expected=4, pinned=set(), rules={}, cap=2, wide=2)
+        self.assertEqual(full_limits, {"scene": None, "wide": None})   # la dernière passe n'avait plus de plafond
+        middle, middle_limits = pipeline.select_moments(pool, 10, expected=4, pinned=set(), rules={}, cap=2, wide=2)
         self.assertEqual(len(middle), 4)                 # 2e passe : deux photos de plus par activité et par plan large
+        self.assertEqual(middle_limits, {"scene": 4, "wide": 4})
         self.assertTrue({c.file_id for c in strict} <= {c.file_id for c in middle})
 
     def test_adult_alone_and_tiny_subject(self):

@@ -305,6 +305,38 @@ def cross_val_auc(X: np.ndarray, y: np.ndarray, folds: int = 5, l2: float = L2, 
     return auc(preds, y)
 
 
+def shot_report(X: np.ndarray, y: np.ndarray, ids: list[str], cache: dict, out=print, min_each: int = 4) -> dict:
+    """Les photos gardées et retirées, selon la taille des visages (d'après `features.json`) : combien de
+    chaque sorte, et quels critères séparent les gardées des retirées dans chaque type de plan. Les plans larges
+    sont ce qu'il retire le plus ET ce qu'il garde le plus : qu'est-ce qui fait un bon plan large ?"""
+    from . import scoring
+
+    def kind(fid: str) -> str:
+        feat = (cache.get(fid) or {}).get("feat")
+        if not feat:
+            return "inconnu"
+        faces = scoring.real_faces(feat)
+        return scoring.shot_type(feat, faces) if faces else "sans visage"
+
+    kinds = np.array([kind(f) for f in ids])
+    report: dict = {}
+    out("Par taille des visages (gardées / retirées) :")
+    for name in ("scène", "plan moyen", "gros plan", "sans visage", "inconnu"):
+        rows = kinds == name
+        kept, removed = int(y[rows].sum()), int(rows.sum() - y[rows].sum())
+        if not rows.any():
+            continue
+        entry = {"kept": kept, "removed": removed, "auc": {}}
+        out(f"  {name:<12} {kept} gardées, {removed} retirées ({removed / (kept + removed):.0%} retirées)")
+        if kept >= min_each and removed >= min_each:
+            scores = {FEATURES[i]: auc(X[rows, i], y[rows]) for i in range(len(FEATURES))}
+            entry["auc"] = {k: round(v, 3) for k, v in scores.items() if v == v}
+            best = sorted(entry["auc"].items(), key=lambda kv: -abs(kv[1] - 0.5))[:6]
+            out("    ce qui sépare les gardées des retirées (AUC seul) : " + ", ".join(f"{k} {v:.2f}" for k, v in best))
+        report[name] = entry
+    return report
+
+
 # ---- photos retirées pour de bon -------------------------------------------------------------
 def _excluded_path(workdir: Path) -> Path:
     return workdir / ".cache" / "excluded.json"
@@ -388,6 +420,7 @@ def main(argv=None) -> None:
             print(f"  {k:<11} AUC seul = {auc(X[:, i], y):.3f}")
         if len(y):
             print("Ce qui compte :", train(X, y).explain(8))
+            shot_report(X, y, ids, cache)
         XI, yi, ids_i = _image_dataset(workdir, vectors, current)
         print(f"Sur l'image (ViT-L/14) : {int(yi.sum())} aimées, {int(len(yi) - yi.sum())} moins aimées.")
         if len(yi) >= 10:

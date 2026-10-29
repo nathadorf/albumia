@@ -384,6 +384,28 @@ class FinalTouchTests(unittest.TestCase):
             taste.exclude(Path(d), ["b", "c"])
             self.assertEqual(taste.excluded(Path(d)), {"a", "b", "c"})
 
+    def test_the_report_by_shot_size_says_what_separates_kept_from_removed_wide_shots(self):
+        from album_builder import taste
+        rng = np.random.default_rng(1)
+        ids, rows, labels, cache = [], [], [], {}
+        for i in range(24):
+            wide, kept = i % 2 == 0, i % 4 < 2
+            box = [10, 10, 80, 80] if wide else [100, 100, 150, 150]       # 0,9 % ou 3 % de l'image
+            cache[f"p{i}"] = {"feat": feat(faces=[face(box=box)])}
+            row = {k: float(rng.uniform(0.3, 0.7)) for k in taste.FEATURES}
+            row["moment"] = 0.9 if kept else 0.1                         # le critère qui sépare, dans tous les plans
+            ids.append(f"p{i}")
+            rows.append([row[k] for k in taste.FEATURES])
+            labels.append(1.0 if kept else 0.0)
+        cache["p0"] = {"feat": feat()}                                     # sans aucun visage
+        lines = []
+        report = taste.shot_report(np.array(rows), np.array(labels), ids, cache, out=lines.append, min_each=3)
+        self.assertEqual(report["sans visage"], {"kept": 1, "removed": 0, "auc": {}})
+        self.assertEqual(report["scène"]["kept"] + report["scène"]["removed"], 11)
+        self.assertEqual(report["plan moyen"]["kept"] + report["plan moyen"]["removed"], 12)
+        self.assertEqual(report["scène"]["auc"]["moment"], 1.0)
+        self.assertTrue(any("moment 1.00" in line for line in lines))
+
     def test_taste_needs_good_cross_validation(self):
         from album_builder import taste
         import numpy as np
@@ -612,7 +634,7 @@ class FamilyHolidayTests(unittest.TestCase):
             c.feat["faces"] = [face(box=[100, 100, 200, 200])]
             items.append(c)
         sel = scoring.select_spread(items, 20, decor_max=scoring.DECOR_MAX_SHARE)
-        self.assertLessEqual(sum(1 for c in sel if not c.feat["faces"]), 2)
+        self.assertEqual(sum(1 for c in sel if not c.feat["faces"]), int(20 * scoring.DECOR_MAX_SHARE))
         self.assertEqual(len(sel), 20)
 
     def test_holiday_without_year_follows_the_photos(self):

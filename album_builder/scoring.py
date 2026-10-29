@@ -585,7 +585,8 @@ def theme_scores(vecs: dict[str, list[float]], days: dict[str, date], theme_vec,
 
 SELFIE_MAX = 2            # selfies (un adulte en gros plan, bras tendu) : 2 par album au plus
 SELFIE_FACE_AREA = 0.06   # visage d'adulte de plus de 6 % de l'image : pris à bout de bras
-DECOR_MAX_SHARE = 0.10   # photos sans personne (rue, plat, affiche) : 10 % de l'album au plus
+DECOR_MAX_SHARE = 0.20   # photos sans visage net (valises du départ, pelouse, Kotel au loin) : 20 % au plus ; sa sélection
+#                        finale en compte au moins 20 %, et la rue, les affiches et les plats sont déjà écartés ailleurs
 FAMILY_MIN_SHARE = 0.15   # album « en famille » : chacun sur au moins ~15 % des photos…
 FAMILY_MAX_SHARE = 0.40   # …et personne seul(e) sur plus de 40 %
 FAMILY_NEED = 0.06        # coup de pouce par personne encore trop peu présente

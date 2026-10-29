@@ -182,7 +182,11 @@ de prises, photo choisie), `--pairs` range les paires de photos très proches se
 (`TAKE_PRESETS`), les poids ajustés sur ses choix.
 
 Quand le dossier est petit, l'album prend d'abord un moment par photo, puis une 2ᵉ prise des moments forts
-(`add_extra_takes`) plutôt que de rester court. Les critères de photographe (`PRO_CRITERIA`) sont étalonnés sur
+(`add_extra_takes` : d'abord quelqu'un d'autre ou un autre plan, ensuite une autre vue du même lieu) plutôt que de
+rester court. Les plafonds viennent de ce qu'il garde : plans larges 40 % (`WIDE_SHARE` ; il en garde 44 à 53 %, mais
+en retire 54 % de ceux qu'on lui propose), photos sans visage net 20 % (`DECOR_MAX_SHARE`). `taste --eval` détaille aussi,
+par taille de visage, ce qui sépare les photos gardées des retirées, et `--takes` donne la justesse des poids ajustés sur
+des paires mises de côté (le seul chiffre honnête, les réglages prédéfinis ayant été choisis sur ces paires). Les critères de photographe (`PRO_CRITERIA`) sont étalonnés sur
 le lot analysé (`aesthetic.calibrate`) : un critère qui répond « oui » à tout ne départage plus rien. Le goût
 appris n'utilise pas le type de scène comme entrée (il fuyait le résultat) : l'intérêt de la scène n'entre
 qu'une fois, dans `rate()`.

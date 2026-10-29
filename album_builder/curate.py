@@ -65,7 +65,10 @@ SHARP_FULL = 0.6                      # au-delà de cette netteté, plus de cré
 TINY_SUBJECT = 0.015                  # visage de la famille sous 1,5 % de l'image : sujet minuscule
 TINY_PENALTY = 0.03                   # un simple départage : il a remis lui-même une vue large aux enfants minuscules
 ADULT_ALONE_PENALTY = 0.12
-WIDE_SHARE = 0.25                     # plans larges : un quart de l'album au plus
+# plans larges (visage sous 1,5 % de l'image : un groupe au loin, un lieu). Ce qu'il garde en compte 44 % (4 albums
+# relus) et 53 % (sa sélection finale), mais 54 % de ceux qu'on lui propose sont retirés (18 % des autres) : un plafond
+# à 40 %, et ce sont la note, le moment et l'ouverture des chapitres qui choisissent lesquels
+WIDE_SHARE = 0.40
 SCENE_SHARE = 0.08                    # une même scène (piscine…) : 8 % de l'album, 2 photos au moins
 SCENE_CAP_MIN = 2
 TITLE_SCENE_SHARE = 0.5               # un chapitre ne prend le nom d'une scène que si elle en fait la moitié
@@ -268,12 +271,13 @@ EXTRA_SAME_FRAME_BITS = 10                # sans vecteur : deux cadrages à 10 b
 
 
 def add_extra_takes(selected: list[Candidate], others: dict[int, list[Candidate]], sizes: dict[int, int],
-                    count: int) -> list[Candidate]:
+                    count: int, decor_max: int | None = None) -> list[Candidate]:
     """Un dossier qui n'a que 25 moments pour 31 places : tous les moments d'abord, puis les moments forts
     donnent une prise de plus (le Kotel en quatre vues, le loulav en deux) jusqu'à `event_cap` photos chacun.
 
-    Une prise en plus apporte quelqu'un d'autre ou un autre plan, et n'est jamais la même image qu'une photo
-    déjà choisie ; ni selfie, ni adulte seul, ni repas, ni visages minuscules."""
+    D'abord une prise qui apporte quelqu'un d'autre ou un autre plan ; s'il reste des places, une autre vue
+    du même lieu suffit (le Kotel de trois côtés : il en avait gardé quatre). Jamais la même image qu'une photo
+    déjà choisie ; ni selfie, ni adulte seul, ni repas, ni visages minuscules ; au plus `decor_max` photos sans visage."""
     out = list(selected)
     chosen = {o.file_id for o in out}
     spare = [c for takes in others.values() for c in takes if c.file_id not in chosen]
@@ -287,30 +291,37 @@ def add_extra_takes(selected: list[Candidate], others: dict[int, list[Candidate]
     for c in out:
         near |= vecs.near(index[id(c)], EXTRA_POSE_COS)
         mates.setdefault(c.meta.get("moment"), []).append(c)
+    decor = [sum(1 for c in out if not scoring.real_faces(c.feat))]
 
-    def usable(c: Candidate) -> bool:
+    def usable(c: Candidate, fresh: bool) -> bool:
         k = c.meta.get("moment")
         if len(mates.get(k, ())) >= event_cap(sizes.get(k, 1)) or near[index[id(c)]]:
             return False
         if c.meta.get("selfie") or c.meta.get("adult_only") or c.meta.get("meal") or c.meta.get("tiny"):
             return False
+        if decor_max is not None and decor[0] >= decor_max and not scoring.real_faces(c.feat):
+            return False
         i = index[id(c)]
         if not (vecs.hasL[i] or vecs.hasB[i]) and any(      # sans œil d'éditeur : seul le cadrage dit si c'est une autre image
                 scoring.hamming_hex(c.feat["dhash"], o.feat["dhash"]) <= EXTRA_SAME_FRAME_BITS for o in mates.get(k, ())):
             return False
+        if not fresh or not mates.get(k):
+            return True
         known = set().union(*(o.labels for o in mates.get(k, ())))
         shots = {o.meta.get("shot") for o in mates.get(k, ())}
-        return not mates.get(k) or bool(c.labels - known) or c.meta.get("shot") not in shots
+        return bool(c.labels - known) or c.meta.get("shot") not in shots
 
-    while len(out) < count:
-        options = [c for c in spare if usable(c)]
-        if not options:
-            break
-        best = max(options, key=lambda c: take_value(c) + EXTRA_STRENGTH * math.log2(max(1, sizes.get(c.meta.get("moment"), 1))))
-        out.append(best)
-        spare.remove(best)
-        mates.setdefault(best.meta.get("moment"), []).append(best)
-        near |= vecs.near(index[id(best)], EXTRA_POSE_COS)
+    for fresh in (True, False):
+        while len(out) < count:
+            options = [c for c in spare if usable(c, fresh)]
+            if not options:
+                break
+            best = max(options, key=lambda c: take_value(c) + EXTRA_STRENGTH * math.log2(max(1, sizes.get(c.meta.get("moment"), 1))))
+            out.append(best)
+            spare.remove(best)
+            mates.setdefault(best.meta.get("moment"), []).append(best)
+            near |= vecs.near(index[id(best)], EXTRA_POSE_COS)
+            decor[0] += int(not scoring.real_faces(best.feat))
     return sorted(out, key=lambda c: c.when)
 
 
@@ -689,7 +700,8 @@ def takes_report(plan_paths: list[Path], workdir: Path, out=print, min_pairs: in
         acc[k] = wins / len(both)
         out(f"  {k:<12} la prise gardée est la meilleure dans {acc[k]:.0%} des {len(both)} paires")
     presets = {}
-    out("Réglages du choix de la prise (part des paires où la prise gardée a la meilleure valeur) :")
+    out("Réglages du choix de la prise (part des paires où la prise gardée a la meilleure valeur ; ils ont été "
+        "réglés en regardant ces mêmes paires : un chiffre optimiste) :")
     for label, weights in TAKE_PRESETS.items():
         wins = sum(1.0 if take_value(w, weights) > take_value(l, weights) else
                    0.5 if take_value(w, weights) == take_value(l, weights) else 0.0 for w, l in pairs)
@@ -702,15 +714,27 @@ def takes_report(plan_paths: list[Path], workdir: Path, out=print, min_pairs: in
     usable = [(a, b) for a, b in rows if all(k in a and k in b for k in fit)]
     if len(usable) < min_pairs or not fit:
         return {"pairs": len(pairs), "accuracy": acc, "presets": presets, "weights": {}}
-    X = np.array([[a[k] - b[k] for k in fit] for a, b in usable])
-    X = X / (np.sqrt((X ** 2).mean(axis=0)) + 1e-9)   # même échelle pour tous : on compare des poids, pas des unités
-    X = np.vstack([X, -X])
-    y = np.array([1.0] * len(usable) + [0.0] * len(usable))
-    model = taste.train(X, y, l2=3.0, lr=None)
+    diffs = np.array([[a[k] - b[k] for k in fit] for a, b in usable])
+
+    def fitted(rows: np.ndarray):
+        scale = np.sqrt((rows ** 2).mean(axis=0)) + 1e-9   # même échelle pour tous : on compare des poids, pas des unités
+        X = np.vstack([rows / scale, -rows / scale])
+        y = np.array([1.0] * len(rows) + [0.0] * len(rows))
+        return taste.train(X, y, l2=3.0, lr=None), scale
+
+    model, scale = fitted(diffs)
     weights = dict(zip(fit, (round(float(w), 2) for w in model.w)))
     out(f"Poids ajustés sur {len(usable)} paires, critères à la même échelle (plus c'est grand, plus le critère fait choisir la prise gardée) :")
     out("  " + ", ".join(f"{k} {w:+.2f}" for k, w in sorted(weights.items(), key=lambda kv: -abs(kv[1]))))
-    return {"pairs": len(pairs), "accuracy": acc, "presets": presets, "weights": weights}
+    # le vrai chiffre : chaque paire jugée par des poids ajustés sans elle
+    hits = 0.0
+    for i in range(len(diffs)):
+        m, sc = fitted(np.delete(diffs, i, axis=0))
+        z = float((diffs[i] / sc) @ m.w + m.b)
+        hits += 1.0 if z > 0 else 0.5 if z == 0 else 0.0
+    loo = hits / len(diffs)
+    out(f"Ces poids, essayés sur chaque paire mise de côté (ajustés sans elle) : la prise gardée est trouvée dans {loo:.0%} des cas.")
+    return {"pairs": len(pairs), "accuracy": acc, "presets": presets, "weights": weights, "held_out": loo}
 
 
 # ---- les paires presque pareilles et ce que la famille en a fait --------------------------------
