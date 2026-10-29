@@ -262,16 +262,45 @@ def scene_of(img_vec: np.ndarray, scene_vectors: np.ndarray) -> str:
     return list(SCENES)[int(np.argmax(scene_vectors @ img_vec))]
 
 
-def judge_vector(img_vec: np.ndarray, text_vectors: dict) -> dict[str, float]:
-    """Pour chaque critère : probabilité (0 à 1) que l'image ressemble aux descriptions positives."""
+def judge_vector(img_vec: np.ndarray, text_vectors: dict, odds: bool = False) -> dict[str, float]:
+    """Pour chaque critère : probabilité (0 à 1) que l'image ressemble aux descriptions positives.
+
+    Avec `odds`, le logarithme du rapport de chances à la place : il ne sature pas (une probabilité
+    arrondie à 1,0 ou à 0,02 ne départage plus personne), `calibrate` le met ensuite à l'échelle."""
     out = {}
     for k, (pos, neg) in text_vectors.items():
         if k.startswith("_"):
             continue
         logits = 100.0 * np.concatenate([pos @ img_vec, neg @ img_vec])
-        p = np.exp(logits - logits.max())
-        p /= p.sum()
-        out[k] = round(float(p[: len(pos)].sum()), 4)
+        top = logits.max()
+        weights = np.exp(logits - top)
+        if odds:
+            out[k] = round(float(np.log(weights[: len(pos)].sum()) - np.log(weights[len(pos):].sum())), 3)
+        else:
+            out[k] = round(float(weights[: len(pos)].sum() / weights.sum()), 4)
+    return out
+
+
+CALIBRATE_MIN = 20   # en dessous, trop peu de photos pour se situer parmi elles
+
+
+def calibrate(odds: dict[str, dict[str, float]], keys) -> dict[str, dict[str, float]]:
+    """Rang (0 à 1) de chaque photo parmi les autres, critère par critère, à partir des rapports de chances.
+
+    Les critères de photographe (fond rangé, geste, vrai moment…) sortent presque tous près de 0 ou de 1
+    avec CLIP : leur rang, lui, sépare les photos et pèse pareil d'un critère à l'autre."""
+    if len(odds) < CALIBRATE_MIN:
+        return {}
+    out: dict[str, dict[str, float]] = {fid: {} for fid in odds}
+    for k in keys:
+        ids = [fid for fid, o in odds.items() if k in o]
+        if len(ids) < CALIBRATE_MIN:
+            continue
+        values = np.array([odds[fid][k] for fid in ids])
+        ordered = np.sort(values)
+        rank = (np.searchsorted(ordered, values, "left") + np.searchsorted(ordered, values, "right")) / 2.0
+        for fid, r in zip(ids, rank):
+            out[fid][k] = round(float((r + 0.5) / (len(ids) + 1)), 4)
     return out
 
 

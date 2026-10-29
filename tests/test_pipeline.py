@@ -267,6 +267,16 @@ class PipelinePhotographerTests(unittest.TestCase):
         self.assertLessEqual({"name", "why", "date", "scene", "gap", "people", "face", "shot", "kind", "size", "score",
                               "moment"}, set(record))
 
+    def test_moments_log_counts_the_takes_and_what_was_chosen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            plan = self.build(tmp, count=12)
+            moments = json.loads((tmp / ".cache" / "moments.json").read_text(encoding="utf-8"))
+        chosen = {p["id"] for p in plan["photos"]}
+        self.assertEqual({i for m in moments for i in m["chosen"]}, chosen)
+        self.assertTrue(all(m["takes"] >= 1 and m["start"] <= m["end"] for m in moments))
+        self.assertEqual(len(moments), plan["stats"]["moments"])
+
     def test_removed_photos_are_rated_like_the_others_but_never_offered(self):
         from album_builder import aesthetic, cli
 
@@ -366,6 +376,72 @@ class ShortlistAndFlagsTests(unittest.TestCase):
         self.assertEqual(out[twin.file_id]["twin"][0], chosen.name)
         self.assertGreater(out[twin.file_id]["twin"][1], 0.9)
         self.assertLess(out[other.file_id]["twin"][1], 0.1)
+
+    def test_family_removals_come_from_the_other_family_albums_only(self):
+        from album_builder import pipeline
+
+        def plan(root, slug, family, removed):
+            (root / slug).mkdir()
+            (root / slug / "plan.json").write_text(json.dumps({
+                "settings": {"family": family}, "review": {"removed": [{"id": i, "reason": r} for i, r in removed]}}))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan(root, "octobre", True, [("papa", "personnes"), ("flou", "pas-belle")])
+            plan(root, "eydel", False, [("cousin", "personnes")])          # pas un album en famille
+            plan(root, "souccot", True, [("voisin", "personnes")])         # cet album-ci : relu à part
+            (root / "casse").mkdir()
+            (root / "casse" / "plan.json").write_text("{")
+            self.assertEqual(pipeline.family_removals(root, "souccot"), {"papa"})
+
+    def test_copy_of_names_the_photo_that_absorbed_a_copy(self):
+        from album_builder import pipeline
+        from tests.test_curate import photo
+
+        kept = photo(1, datetime(2025, 10, 12, 9, 36), 0.8, dhash="0" * 16)
+        copy = photo(2, datetime(2025, 10, 12, 9, 36, 1), 0.7, dhash="000000000000000f")
+        far = photo(3, datetime(2025, 10, 13, 9, 36), 0.7, dhash="f" * 16)
+        self.assertEqual(pipeline.copy_of(copy, [far, kept]), [kept.name, 4, 1])
+        self.assertEqual(pipeline.copy_of(copy, []), [])
+
+    def test_left_out_says_which_limits_were_reached(self):
+        from album_builder import pipeline
+        from tests.test_curate import photo, unit
+
+        base = lambda i: unit(*[1.0 if j == i else 0.0 for j in range(16)])
+        chosen = [photo(i, datetime(2025, 10, 7 + i, 10), 0.8, vec_l=base(i), shot="scène", note="Jeux gonflables")
+                  for i in range(3)]
+        meal = photo(10, datetime(2025, 10, 12, 10), 0.6, vec_l=base(10), note="Repas")
+        meal.meta["meal"] = True
+        wide = photo(11, datetime(2025, 10, 13, 10), 0.6, vec_l=base(11), shot="scène", note="Jeux gonflables")
+        same = photo(12, datetime(2025, 10, 14, 10), 0.6, vec_l=unit(1, 0.05, *[0] * 14), shot="plan moyen", note="Portrait")
+        for k, c in enumerate(chosen + [meal, wide, same]):
+            c.meta["moment"] = k
+        out = pipeline.left_out(chosen, chosen + [meal, wide, same], {},
+                                {"scene": 2, "wide": 3, "meal": 0, "selfie": 1, "decor": None})
+        self.assertEqual(out["id10"]["blocked"], ["repas 0/0"])
+        self.assertEqual(out["id11"]["blocked"], ["plans larges 3/3", "scène Jeux gonflables 3/2"])
+        self.assertTrue(any(b.startswith("même pose que") for b in out["id12"]["blocked"]))
+        self.assertEqual(out["id12"]["twin"][0], chosen[0].name)
+
+    def test_a_small_folder_gets_every_moment_before_the_rules_leave_places_empty(self):
+        from album_builder import curate, pipeline, scenes
+        from tests.test_curate import photo, unit
+
+        base = lambda i: unit(*[1.0 if j == i else 0.0 for j in range(16)])
+        pool = []
+        for i in range(10):                              # 10 moments, tous la même scène, tous des plans larges
+            c = photo(i, datetime(2025, 10, 7 + i, 10), 0.8 - 0.01 * i, vec_l=base(i), shot="scène", note="Jeux dehors",
+                      labels={"Eydel"})
+            c.meta["moment"] = i
+            pool.append(c)
+        strict = pipeline.select_moments(pool, 10, expected=2, pinned=set(), rules={}, cap=2, wide=2)
+        self.assertEqual(len(strict), 2)                 # si l'on se contente de 2, les plafonds suffisent
+        full = pipeline.select_moments(pool, 10, expected=10, pinned=set(), rules={}, cap=2, wide=2)
+        self.assertEqual(len(full), 10)                  # sinon on assouplit puis on lève, sans rien perdre
+        middle = pipeline.select_moments(pool, 10, expected=4, pinned=set(), rules={}, cap=2, wide=2)
+        self.assertEqual(len(middle), 4)                 # 2e passe : deux photos de plus par activité et par plan large
+        self.assertTrue({c.file_id for c in strict} <= {c.file_id for c in middle})
 
     def test_adult_alone_and_tiny_subject(self):
         from datetime import date

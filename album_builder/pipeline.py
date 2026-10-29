@@ -194,6 +194,22 @@ def previous_review(out_dir: Path) -> tuple[set[str], set[str]]:
     return set(review.get("ids", [])) - removed, removed
 
 
+def family_removals(out_root: Path, slug: str) -> set[str]:
+    """Photos retirées pour « pas les bonnes personnes » d'un autre album « en famille » : on y attend les mêmes
+    personnes, la même erreur se répète ici (papa sur son téléphone revenait d'un album à l'autre)."""
+    gone: set[str] = set()
+    for path in out_root.glob("*/plan.json"):
+        if path.parent.name == slug:
+            continue
+        try:
+            plan = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (plan.get("settings") or {}).get("family"):
+            gone |= {r["id"] for r in (plan.get("review") or {}).get("removed", []) if r.get("reason") == "personnes"}
+    return gone
+
+
 SHORTLIST_FACTOR, SHORTLIST_FLOOR, SHORTLIST_CEILING = 6, 120, 500
 SHORTLIST_PER_MOMENT, SHORTLIST_PER_DAY = 3, 4
 
@@ -348,11 +364,22 @@ def diagnosis(c, why: str) -> dict:
 LEFT_OUT_TOP = 300   # on cherche la photo jumelle des mieux notées seulement
 
 
-def left_out(selected, pool, others) -> dict[str, dict]:
+def copy_of(c, pool) -> list:
+    """[nom, écart dhash, écart en secondes] de la photo de `pool` qui ressemble le plus à `c` (sa copie)."""
+    best = min(pool, key=lambda o: (scoring.hamming_hex(o.feat["dhash"], c.feat["dhash"]),
+                                    abs((o.when - c.when).total_seconds())), default=None)
+    if best is None:
+        return []
+    return [best.name, scoring.hamming_hex(best.feat["dhash"], c.feat["dhash"]),
+            int(abs((best.when - c.when).total_seconds()))]
+
+
+def left_out(selected, pool, others, limits=None) -> dict[str, dict]:
     """Les photos qui avaient passé les filtres sans entrer dans l'album : « autre prise du moment » (une
     meilleure prise l'a emporté) ou « pas choisie » (la meilleure de son moment, faute de place), avec la
-    photo choisie qui lui ressemble le plus : si c'est une quasi-jumelle, c'est la règle « jamais deux
-    fois la même pose » qui l'a écartée."""
+    photo choisie qui lui ressemble le plus (si c'est une quasi-jumelle, c'est la règle « jamais deux fois
+    la même pose » qui l'a écartée) et les plafonds déjà atteints (`limits`: scene, wide, meal, selfie, decor)."""
+    limits = limits or {}
     chosen = {c.file_id for c in selected}
     out = {c.file_id: diagnosis(c, "autre prise du moment") for takes in others.values() for c in takes
            if c.file_id not in chosen}
@@ -360,15 +387,53 @@ def left_out(selected, pool, others) -> dict[str, dict]:
     index = {id(c): i for i, c in enumerate(pool)}
     picked = [index[id(c)] for c in selected if id(c) in index]
     unchosen = sorted((c for c in pool if c.file_id not in chosen), key=lambda c: c.score, reverse=True)
+    now = {"wide": sum(1 for c in selected if c.meta.get("shot") == "scène"),
+           "meal": sum(1 for c in selected if c.meta.get("meal")),
+           "selfie": sum(1 for c in selected if c.meta.get("selfie")),
+           "decor": sum(1 for c in selected if not scoring.real_faces(c.feat))}
+    by_scene: dict[str, int] = {}
+    for c in selected:
+        by_scene[c.note] = by_scene.get(c.note, 0) + 1
     for rank, c in enumerate(unchosen):
         record = diagnosis(c, "pas choisie")
+        blocks = []
+        if limits.get("wide") is not None and c.meta.get("shot") == "scène" and now["wide"] >= limits["wide"]:
+            blocks.append(f"plans larges {now['wide']}/{limits['wide']}")
+        if limits.get("scene") and c.note and c.note not in scenes.GENERIC and by_scene.get(c.note, 0) >= limits["scene"]:
+            blocks.append(f"scène {c.note} {by_scene[c.note]}/{limits['scene']}")
+        if limits.get("meal") is not None and c.meta.get("meal") and now["meal"] >= limits["meal"]:
+            blocks.append(f"repas {now['meal']}/{limits['meal']}")
+        if limits.get("selfie") is not None and c.meta.get("selfie") and now["selfie"] >= limits["selfie"]:
+            blocks.append(f"selfies {now['selfie']}/{limits['selfie']}")
+        if limits.get("decor") is not None and not scoring.real_faces(c.feat) and now["decor"] >= limits["decor"]:
+            blocks.append(f"sans visage {now['decor']}/{limits['decor']}")
         if rank < LEFT_OUT_TOP:
-            twins = [(s[0], j) for j in picked if (s := vecs.cos(index[id(c)], j))]
+            twins = [(s[0], j, s[1]) for j in picked if (s := vecs.cos(index[id(c)], j))]
             if twins:
-                best, j = max(twins)
+                best, j, kind = max(twins)
                 record["twin"] = [pool[j].name, round(best, 3)]
+                if best >= curate.POSE_COS[kind]:
+                    blocks.append(f"même pose que {pool[j].name}")
+        record["blocked"] = blocks
         out[c.file_id] = record
     return out
+
+
+def select_moments(pool, count: int, expected: int, pinned, rules: dict, cap: int | None, wide: int | None) -> list:
+    """Les règles du photographe d'abord ; tant qu'il reste des moments sans photo, on les assouplit (la même
+    pose un peu plus près, deux photos de plus par activité ou en plan large), puis on les lève pour les
+    prendre tous : quand le dossier est petit, chaque moment compte (la sélection à la main de la famille
+    les gardait). Les photos déjà choisies restent."""
+    relaxed = {k: v + 0.05 for k, v in curate.POSE_COS.items()}
+    selected: list = []
+    for pose, scene_limit, wide_limit in ((curate.POSE_COS, cap, wide),
+                                          (relaxed, cap and cap + 2, wide and wide + 2), (None, None, None)):
+        selected = scoring.select_spread(
+            pool, count, pinned=set(pinned) | {c.file_id for c in selected}, pose_cos=pose,
+            scene_cap=scene_limit, scene_exempt=scenes.GENERIC, wide_max=wide_limit, **rules)
+        if len(selected) >= expected:
+            break
+    return selected
 
 
 def refine_with_large_eye(short, examples, editor, model_dir: Path, rep, rate, all_parts, rejected, pinned,
@@ -383,6 +448,12 @@ def refine_with_large_eye(short, examples, editor, model_dir: Path, rep, rate, a
     described = scenes.describe_all(vecs_l, model_dir, rep.note, large=True)
     crit = aesthetic.criteria_large(model_dir, rep.note)
     liked = scenes.interest(examples, {k: v[0] for k, v in described.items()}) if described else liked_scene
+    # les critères de photographe se situent parmi les photos de ce passage (leur probabilité brute est
+    # presque toujours près de 0 ou de 1 : elle ne départage pas deux prises d'un même moment)
+    seen = [c for c in [*short, *side] if (editor.get(c.file_id) or {}).get("vec_l")]
+    ranks = aesthetic.calibrate(
+        {c.file_id: aesthetic.judge_vector(np.asarray(editor[c.file_id]["vec_l"], dtype=float), crit, odds=True)
+         for c in seen}, scoring.PRO_KEYS) if crit else {}
 
     def look(c, offered: bool) -> bool:
         """Note à nouveau `c` avec l'œil plus précis ; faux si une photo proposée est « sans intérêt »."""
@@ -391,7 +462,8 @@ def refine_with_large_eye(short, examples, editor, model_dir: Path, rep, rate, a
             return True
         c.meta["vec_l"] = vec_l
         if crit:
-            c.meta["editor_l"] = aesthetic.judge_vector(np.asarray(vec_l, dtype=float), crit)
+            c.meta["editor_l"] = {**aesthetic.judge_vector(np.asarray(vec_l, dtype=float), crit),
+                                  **ranks.get(c.file_id, {})}
         if c.file_id in described:
             scene, dull, gap = described[c.file_id]
             c.note, c.meta["gap"] = scene, gap
@@ -566,6 +638,8 @@ def build_plan(
     # pour « pas les bonnes personnes » non (elles restent possibles dans d'autres albums)
     pinned, banned_here = previous_review(out_root / slugify(params.name))
     banned |= banned_here
+    if params.family:
+        banned |= family_removals(out_root, slugify(params.name))
     # les photos retirées « pas belle » / « goût », par jour : leur quasi-jumelle (même série) ne revient
     # pas à leur place. Pas pour un « doublon » : sa jumelle est justement la photo qu'on a gardée.
     by_id = {f.id: f for f in files}
@@ -638,39 +712,39 @@ def build_plan(
         # une photo gardée à une relecture, le thème de l'album
         c.meta["shield"] = bool(family_close or f.id in kept or themed.get(f.id, (0, False))[1])
         twins = banned_vecs.get(f.when.date())
-        if f.id in banned:
-            why = "retirée avant"
-        elif f.id in pinned:
-            why = ""
-        elif twins and c.meta["vec"] and f.id not in kept and any(
+        if f.id in pinned and f.id not in banned:
+            filtered = ""
+        elif twins and c.meta["vec"] and f.id not in kept and f.id not in banned and any(
                 scoring.same_series(name, f.name, float(np.dot(v, c.meta["vec"]))) for name, v in twins):
-            why = "comme une photo retirée"
+            filtered = "comme une photo retirée"
         elif kind == "capture":
-            why = "pas une photo"
+            filtered = "pas une photo"
         elif (c.meta["editor"] or {}).get("not_album", 0) > aesthetic.NOT_ALBUM_REJECT:
-            why = "pas pour un album"
+            filtered = "pas pour un album"
         # un décor sans personne de la famille n'est pas sauvé par le thème ni par un « lieu »
         # (banderole, enseigne, hall d'hôtel prenaient le libellé « Kotel » ou « fête »)
         elif f.id in objects and not labels and f.id not in kept:
-            why = "objet ou décor"
+            filtered = "objet ou décor"
         elif dull and not c.meta["shield"]:
-            why = "sans intérêt"
+            filtered = "sans intérêt"
         elif scoring.too_small_to_print(f.width, f.height, kind):
-            why = "trop petite pour l'impression"
+            filtered = "trop petite pour l'impression"
         elif c.parts["sharpness"] < scoring.REJECT_SHARPNESS:
-            why = "floue"
+            filtered = "floue"
         elif params.must and must_missing(params.must, labels, refs_by_month[month], per_face):
-            why = "personne absente"
+            filtered = "personne absente"
         elif must_faces and max(x["box"][2] * x["box"][3] for x in must_faces) / area < scoring.MIN_SUBJECT_AREA:
-            why = "personne trop petite"
+            filtered = "personne trop petite"
         elif params.family and faces and not labels & set(wanted) and set(wanted) <= set(refs_by_month[month]):
-            why = "personne de la famille"
+            filtered = "personne de la famille"
         elif params.faces_only and not faces:
-            why = "sans visage"
+            filtered = "sans visage"
         elif params.theme_strict and themed and not themed.get(f.id, (0, False))[1]:
-            why = "hors thème"
+            filtered = "hors thème"
         else:
-            why = ""
+            filtered = ""
+        c.meta["usable"] = not filtered     # une photo retirée à une relecture mais qui passait les filtres
+        why = "retirée avant" if f.id in banned else filtered
         if not why:
             cands.append(c)
             continue
@@ -737,10 +811,20 @@ def build_plan(
     pool = scoring.dedupe_bursts(cands, window_seconds=0, burst_seconds=0)   # copies exactes seulement
     kept_ids = {c.file_id for c in pool}
     pool += [c for c in cands if c.file_id in pinned and c.file_id not in kept_ids]  # jamais « doublon »
-    groups = curate.find_moments(pool)
+    pooled = {c.file_id for c in pool}
+    for c in cands:
+        if c.file_id not in pooled:
+            log[c.file_id] = {**diagnosis(c, "copie exacte"), "twin": copy_of(c, pool)}
+    # les prises retirées à une relecture disent la force d'un moment (huit prises du Kotel, pas trois) :
+    # elles comptent pour regrouper et pour mesurer, jamais pour être proposées
+    for c in side:
+        if c.meta.get("usable"):
+            c.meta["banned"] = True
+    groups = curate.find_moments(pool + [c for c in side if c.meta.get("banned")])
     pool, others = curate.heroes(groups, pinned)
     size_of = {c.file_id: len(groups[c.meta["moment"]]) for c in pool}
-    rep.note(f"{len(groups)} moments distincts parmi {len(cands)} photos.")
+    moments = len({c.meta["moment"] for c in pool})
+    rep.note(f"{moments} moments distincts parmi {len(cands)} photos.")
     if pinned:
         rep.note(f"{len(pinned & {c.file_id for c in pool})} photos gardées à ta relecture reprises.")
 
@@ -782,29 +866,30 @@ def build_plan(
     # lève. Une fête (Souccot…) ne fait que dater l'album : ses activités restent plafonnées.
     capped = wanted and (not params.theme or params.theme in intent.HOLIDAYS)
     cap = curate.scene_cap(expected) if capped else None
-    relaxed = {k: v + 0.05 for k, v in curate.POSE_COS.items()}
-    selected: list = []
-    # les règles du photographe d'abord ; si elles laissent trop de places vides (un dossier où tout se
-    # ressemble), on les assouplit puis on les lève pour compléter l'album avec ce qui reste
-    for pose, scene_limit, wide in ((curate.POSE_COS, cap, curate.wide_cap(expected) if wanted else None),
-                                    (relaxed, cap and cap + 2, None), (None, None, None)):
-        selected = scoring.select_spread(
-            pool, params.count, pinned=pinned | seeds | {c.file_id for c in selected}, pose_cos=pose,
-            scene_cap=scene_limit, scene_exempt=scenes.GENERIC, wide_max=wide, **rules)
-        if len(selected) >= 0.8 * expected:
-            break
+    wide_n = curate.wide_cap(expected) if wanted else None
+    selected = select_moments(pool, params.count, expected, pinned | seeds, rules, cap, wide_n)
+    # tous les moments y sont et il reste des places : les moments forts donnent une prise de plus
+    selected = curate.add_extra_takes(selected, others, {k: len(g) for k, g in enumerate(groups)}, params.count)
     if len(selected) < params.count and params.theme_strict and themed:
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:
-        rep.note(f"{len(selected)} photos seulement : les autres sont le même moment, des selfies ou des "
-                 "photos sans personne. Tu peux en reprendre dans la réserve.")
-    selected = curate.add_openers(selected, pool, params.count, protected=pinned | seeds)
+        rep.note(f"{len(selected)} photos seulement : ce dossier n'a que {moments} moments différents, les autres "
+                 "photos sont des doubles, des selfies ou des photos sans personne. Tu peux en reprendre dans la réserve.")
+    selected = curate.add_openers(selected, pool, params.count, protected=pinned | seeds, wide_limit=wide_n)
     reserve = curate.build_reserve(selected, others, pool, params.reserve)
     members = family or list(refs)
     kids = [m for m in members if m in births and scoring.months_between(births[m], end_day) < 18 * 12]
     plan_layout = curate.layout(selected, reserve, members, kids)
-    log.update(left_out(selected, pool, others))
+    limits = {"scene": cap, "wide": wide_n, "meal": scenes.MEAL_MAX, "selfie": rules["selfie_max"],
+              "decor": max(1, int(params.count * decor)) if decor else None}
+    log.update(left_out(selected, pool, others, limits))
     _save_cache(workdir / ".cache" / "rejected.json", log)
+    chosen_ids = {c.file_id for c in selected}
+    _save_cache(workdir / ".cache" / "moments.json", [   # combien de prises par moment, combien gardées
+        {"start": g[0].when.isoformat(timespec="minutes"), "end": g[-1].when.isoformat(timespec="minutes"),
+         "takes": len(g), "removed_before": sum(1 for c in g if c.meta.get("banned")),
+         "ids": [c.file_id for c in g if not c.meta.get("banned")],
+         "chosen": [c.file_id for c in g if c.file_id in chosen_ids]} for g in groups])
 
     rep.step(5, "Préparation de l'aperçu…")
     out_dir = out_root / slugify(params.name)
@@ -818,7 +903,7 @@ def build_plan(
     }
     stats = {
         "listed": listed, "analyzed": len(files), "after_filters": len(cands),
-        "after_dedupe": len(pool), "moments": len(groups), "no_thumbnail": failed,
+        "after_dedupe": len(pool), "moments": moments, "no_thumbnail": failed,
     }
     return write_plan(out_dir, params.name, summary, selected, thumbs_dir, stats, reserve, plan_layout)
 

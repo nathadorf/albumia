@@ -166,7 +166,8 @@ Comparer un album automatique à une sélection faite à la main, et régler le 
 
 ```bash
 python -m album_builder.curate --compare out/auto/plan.json out/main/plan.json
-python -m album_builder.curate --takes out/main/plan.json
+python -m album_builder.curate --takes out/main/plan.json      # quelle prise du moment il garde (jeux de poids)
+python -m album_builder.curate --pairs out/main/plan.json …    # photos gardées / retirées qui se ressemblent
 python -m album_builder.taste --eval        # ce que le goût appris sait prédire
 ```
 
@@ -175,7 +176,16 @@ un filtre, « hors présélection », « autre prise du moment » ou « pas choi
 ressemble). `curate --compare` s'en sert pour dire pourquoi une photo voulue à la main manque, et signale les
 moments où la sélection à la main garde plusieurs photos (seuils de `MOMENT_COS` à resserrer). Les photos
 retirées à une relecture sont notées comme les autres (jamais proposées) pour que `--eval` et `--takes`
-comparent des critères mesurés de la même façon.
+comparent des critères mesurés de la même façon. `.cache/moments.json` liste les moments trouvés (heure, nombre
+de prises, photo choisie), `--pairs` range les paires de photos très proches selon ce qu'il a gardé ou retiré
+(pour régler `MOMENT_COS` et `POSE_COS`), et `--takes` affiche, en plus de la précision de chaque jeu de poids
+(`TAKE_PRESETS`), les poids ajustés sur ses choix.
+
+Quand le dossier est petit, l'album prend d'abord un moment par photo, puis une 2ᵉ prise des moments forts
+(`add_extra_takes`) plutôt que de rester court. Les critères de photographe (`PRO_CRITERIA`) sont étalonnés sur
+le lot analysé (`aesthetic.calibrate`) : un critère qui répond « oui » à tout ne départage plus rien. Le goût
+appris n'utilise pas le type de scène comme entrée (il fuyait le résultat) : l'intérêt de la scène n'entre
+qu'une fois, dans `rate()`.
 
 La ligne de commande d'origine fonctionne toujours :
 

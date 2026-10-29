@@ -68,6 +68,16 @@ class TakeTests(unittest.TestCase):
         self.assertEqual([c.file_id for c in picks], ["id1"])
         self.assertEqual([c.file_id for c in others[0]], ["id2"])
 
+    def test_what_the_family_kept_counts_more_than_open_eyes_and_sharpness(self):
+        # 35 paires relues : émotion, gestes et personnes ont départagé ; yeux, sourire et netteté non
+        alive = photo(1, T0, 0.55, vec_l=A, labels={"Eydel", "Arié"}, emotion_l=0.9, interaction=0.9, frontal=0.6,
+                      eyes=0.2, smile=0.2, sharpness=0.4)
+        stiff = photo(2, T0 + timedelta(minutes=1), 0.5, vec_l=A, labels={"Eydel"}, emotion_l=0.3, interaction=0.2,
+                      frontal=0.6, eyes=1.0, smile=1.0, sharpness=1.0)
+        self.assertGreater(curate.take_value(alive), curate.take_value(stiff))
+        self.assertGreater(curate.take_value(stiff, curate.TAKE_PRESETS["avant"]) + 0.2,
+                           curate.take_value(alive, curate.TAKE_PRESETS["avant"]))   # l'ancien réglage le payait
+
     def test_more_of_the_family_wins_a_tie(self):
         alone = photo(1, T0, 0.5, vec_l=A, labels={"Eydel"})
         together = photo(2, T0 + timedelta(minutes=1), 0.5, vec_l=A, labels={"Eydel", "Perla"})
@@ -86,6 +96,24 @@ class TakeTests(unittest.TestCase):
     def test_five_identical_takes_stay_one_photo(self):
         takes = [photo(i, T0 + timedelta(minutes=i), 0.6, vec_l=A, labels={"Eydel"}) for i in range(6)]
         self.assertEqual(len(curate.heroes(curate.find_moments(takes))[0]), 1)
+
+    def test_removed_takes_count_for_the_strength_of_a_moment_but_are_never_offered(self):
+        shots = ["gros plan", "plan moyen"]
+        takes = [photo(i, T0 + timedelta(minutes=i), 0.7 - 0.05 * i, vec_l=A, labels={"Eydel"}, shot=shots[i % 2])
+                 for i in range(2)]
+        gone = [photo(10 + i, T0 + timedelta(minutes=3 + i), 0.99, vec_l=A, labels={"Eydel"}) for i in range(3)]
+        for c in gone:
+            c.meta["banned"] = True
+        groups = curate.find_moments(takes + gone)
+        self.assertEqual(len(groups), 1)
+        picks, others = curate.heroes(groups)
+        self.assertEqual(len(picks), 2)                                  # 5 prises en tout : un moment fort
+        self.assertFalse({c.file_id for c in picks + others[0]} & {"id10", "id11", "id12"})
+        alone, _ = curate.heroes(curate.find_moments(takes))             # sans elles : 2 prises, une seule photo
+        self.assertEqual(len(alone), 1)
+        only_gone = curate.find_moments([photo(20, T0 + timedelta(days=2), 0.9, vec_l=B)])
+        only_gone[0][0].meta["banned"] = True
+        self.assertEqual(curate.heroes(only_gone), ([], {0: []}))
 
     def test_a_kept_photo_is_always_the_photo_of_its_moment(self):
         best = photo(1, T0, 0.9, vec_l=A, frontal=1.0, eyes=1.0)
@@ -144,6 +172,54 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(curate.scene_cap(31), 2)
         self.assertEqual(curate.scene_cap(100), 8)
         self.assertEqual(curate.wide_cap(31), 8)
+
+
+class ExtraTakesTests(unittest.TestCase):
+    """Un dossier avec peu de moments : les moments forts donnent des prises en plus."""
+
+    def setUp(self):
+        self.base = lambda i: unit(*[1.0 if j == i else 0.0 for j in range(16)])
+        self.heroes = [photo(1, T0, 0.8, vec_l=self.base(0), labels={"Eydel"}, shot="plan moyen"),
+                       photo(2, T0 + timedelta(hours=5), 0.7, vec_l=self.base(1), labels={"Arié"}, shot="plan moyen")]
+        for k, c in enumerate(self.heroes):
+            c.meta["moment"] = k
+
+    def take(self, i, moment, vec, **kw):
+        c = photo(i, T0 + timedelta(minutes=i), kw.pop("score", 0.6), vec_l=vec, **kw)
+        c.meta["moment"] = moment
+        return c
+
+    def test_a_strong_moment_gives_a_take_with_a_new_shot_or_person(self):
+        wide = self.take(10, 0, self.base(2), labels={"Eydel"}, shot="scène")
+        again = self.take(11, 0, self.base(3), labels={"Eydel"}, shot="plan moyen")       # rien de neuf
+        close = self.take(12, 0, self.base(4), labels={"Eydel", "Perla"}, shot="plan moyen", score=0.5)  # quelqu'un d'autre
+        out = curate.add_extra_takes(self.heroes, {0: [wide, again, close], 1: []}, {0: 30, 1: 1}, 5)
+        ids = {c.file_id for c in out}
+        self.assertEqual(ids, {"id1", "id2", "id10", "id12"})
+        self.assertEqual(len(out), 4)                            # moment de 30 prises : 3 photos au plus (event_cap)
+
+    def test_a_small_moment_stays_one_photo_and_the_album_never_exceeds_the_count(self):
+        take = self.take(10, 1, self.base(2), labels={"Arié", "Perla"}, shot="scène")
+        self.assertEqual(len(curate.add_extra_takes(self.heroes, {0: [], 1: [take]}, {0: 1, 1: 3}, 5)), 2)
+        strong = [self.take(20 + i, 0, self.base(5 + i), labels={"Eydel", f"P{i}"}) for i in range(5)]
+        out = curate.add_extra_takes(self.heroes, {0: strong, 1: []}, {0: 60, 1: 1}, 3)
+        self.assertEqual(len(out), 3)
+
+    def test_never_the_same_image_a_selfie_a_meal_or_tiny_faces(self):
+        same = self.take(10, 0, unit(1, 0.1, *[0] * 14), labels={"Eydel", "Perla"})      # 0,99 de ressemblance
+        flawed = []
+        for k, flaw in enumerate(("selfie", "adult_only", "meal", "tiny")):
+            c = self.take(30 + k, 0, self.base(6 + k), labels={"Eydel", "Perla"}, shot="scène")
+            c.meta[flaw] = True
+            flawed.append(c)
+        out = curate.add_extra_takes(self.heroes, {0: [same] + flawed, 1: []}, {0: 60, 1: 1}, 6)
+        self.assertEqual(len(out), 2)
+
+    def test_the_strongest_moment_comes_first(self):
+        weak = self.take(10, 0, self.base(2), labels={"Eydel", "Perla"}, shot="scène", score=0.7)
+        strong = self.take(11, 1, self.base(3), labels={"Arié", "Perla"}, shot="scène", score=0.7)
+        out = curate.add_extra_takes(self.heroes, {0: [weak], 1: [strong]}, {0: 5, 1: 40}, 3)
+        self.assertEqual({c.file_id for c in out} - {"id1", "id2"}, {"id11"})
 
 
 class ChapterTests(unittest.TestCase):
@@ -329,7 +405,14 @@ class CompareTests(unittest.TestCase):
             (work / ".cache" / "features.json").write_text(json.dumps(
                 {f"p{i}": {"feat": {"dhash": format(i * 0x0F0F, "016x"), "w": 10, "h": 10, "faces": []}} for i in range(4)}))
             (work / ".cache" / "rejected.json").write_text(json.dumps({
-                "p3": {"name": "IMG_3", "why": "sans intérêt", "scene": "Rue", "gap": 0.031, "face": 0.012}}))
+                "p3": {"name": "IMG_3", "why": "sans intérêt", "scene": "Rue", "gap": 0.031, "face": 0.012},
+                "p2": {"name": "IMG_2", "why": "pas choisie", "scene": "Valises", "score": 0.35,
+                       "twin": ["IMG_9", 0.72], "blocked": ["scène Valises 2/2", "plans larges 7/7"]}}))
+            (work / ".cache" / "moments.json").write_text(json.dumps([
+                {"start": "2025-10-07T10:00", "end": "2025-10-07T10:07", "takes": 7, "removed_before": 3,
+                 "ids": ["p0", "p1"], "chosen": ["p0"]},
+                {"start": "2025-10-07T20:00", "end": "2025-10-07T20:00", "takes": 1, "removed_before": 0,
+                 "ids": ["p3"], "chosen": []}]))
             item = lambda i, minutes: {"id": f"p{i}", "name": f"IMG_{i}", "date": (T0 + timedelta(minutes=minutes)).isoformat(),
                                        "score": 0.5, "parts": {}, "people": [], "note": "", "shot": ""}
             auto = {"photos": [item(2, 300)], "reserve": []}
@@ -347,6 +430,17 @@ class CompareTests(unittest.TestCase):
         self.assertAlmostEqual(out["merged"][0]["span_min"], 7)
         self.assertLess(out["merged"][0]["min_cos"], 0.95)
         self.assertIn("IMG_0, IMG_1", text)
+        self.assertIn("ressemble à IMG_9 (0.72)", text)
+        self.assertIn("plafonds : scène Valises 2/2, plans larges 7/7", text)
+        self.assertIn("7 prises (3 retirées avant), à la main 2, album automatique 0", text)
+
+    def test_the_table_of_strong_moments(self):
+        moments = [{"start": "a", "end": "b", "takes": 9, "removed_before": 4, "ids": ["x", "y", "z"], "chosen": ["x"]},
+                   {"start": "c", "end": "d", "takes": 2, "removed_before": 0, "ids": ["u", "v"], "chosen": []},
+                   {"start": "e", "end": "f", "takes": 6, "removed_before": 0, "ids": ["w"], "chosen": []}]
+        table = curate.moments_table(moments, ["x", "y", "u"], ["x"])
+        self.assertEqual([(r["takes"], r["ref"], r["auto"]) for r in table], [(9, 2, 1)])   # 6 prises mais personne ne l'a gardé
+        self.assertEqual(curate.moments_table({}, [], []), [])                            # ancien format ou absent
 
 
 
@@ -410,6 +504,28 @@ class TakesReportTests(unittest.TestCase):
             out = curate.takes_report([path], work, out=lambda *_: None)
         self.assertEqual(out["accuracy"].get("frontal"), None)
 
+    def test_presets_are_compared_on_the_reviewed_pairs(self):
+        item = lambda i, minutes, **parts: {"id": f"p{i}", "name": f"IMG_{i}", "score": 0.5, "parts": parts, "people": [],
+                                            "date": (T0 + timedelta(minutes=minutes)).isoformat(), "note": "", "shot": ""}
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            # la prise gardée a l'émotion et les gestes, la retirée les yeux ouverts, le sourire et la netteté
+            photos, kept, removed = [], [], []
+            for m in range(6):
+                photos += [item(2 * m, 120 * m, emotion_l=0.9, interaction=0.8, eyes=0.2, smile=0.2, sharpness=0.4),
+                           item(2 * m + 1, 120 * m + 2, emotion_l=0.3, interaction=0.3, eyes=1.0, smile=1.0, sharpness=0.9)]
+                kept.append(f"p{2 * m}")
+                removed.append({"id": f"p{2 * m + 1}", "reason": "doublon"})
+            path = TakesReportTests.plan_with(self, work, photos, removed, kept)
+            lines = []
+            out = curate.takes_report([path], work, out=lines.append)
+        self.assertEqual(out["pairs"], 6)
+        self.assertEqual(out["presets"]["actuel"], 1.0)
+        self.assertLess(out["presets"]["avant"], 1.0)                      # l'ancien réglage payait yeux et netteté
+        self.assertGreater(out["weights"]["emotion_l"], 0)
+        self.assertLess(out["weights"]["eyes"], 0)
+        self.assertTrue(any("Réglages" in line for line in lines))
+
     def test_removed_duplicates_not_grouped_with_the_kept_photo_are_counted(self):
         item = lambda i, minutes: {"id": f"p{i}", "name": f"IMG_{i}", "score": 0.5, "parts": {}, "people": [],
                                    "date": (T0 + timedelta(minutes=minutes)).isoformat(), "note": "", "shot": ""}
@@ -420,6 +536,34 @@ class TakesReportTests(unittest.TestCase):
             lines = []
             curate.takes_report([path], work, out=lines.append)
         self.assertTrue(any("1 doublons retirés que je n'ai pas regroupés" in line and "40 min" in line
+                            for line in lines), lines)
+
+
+class PairsReportTests(unittest.TestCase):
+    def test_pairs_of_look_alikes_and_what_the_family_did(self):
+        item = lambda i, minutes, **kw: {"id": f"p{i}", "name": f"IMG_{i}", "score": 0.5, "parts": {}, "people": [],
+                                         "date": (T0 + timedelta(minutes=minutes)).isoformat(), "note": "", **kw}
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            (work / ".cache").mkdir()
+            vec = {"p0": unit(1, 0, 0), "p1": unit(1, 0.4, 0), "p2": unit(1, 0.1, 0), "p3": unit(0, 1, 0), "p4": unit(1, 0.5, 0)}
+            (work / ".cache" / "editor.json").write_text(json.dumps({k: {"vec": v} for k, v in vec.items()}))
+            (work / ".cache" / "features.json").write_text("{}")
+            plan = {"photos": [item(0, 0, shot="plan moyen"), item(1, 3, shot="scène"), item(3, 600, shot="scène")],
+                    "reserve": [item(2, 1, shot="plan moyen"), item(4, 2, shot="plan moyen")],
+                    "review": {"ids": ["p0", "p1", "p3"], "removed": [{"id": "p2", "reason": "doublon"},
+                                                                        {"id": "p4", "reason": "pas-belle"}]}}
+            (work / "plan.json").write_text(json.dumps(plan))
+            lines = []
+            rows = curate.pairs_report([work / "plan.json"], work, out=lines.append)
+        kinds = {(r["a"], r["b"]): r["roles"] for r in rows}
+        self.assertEqual(kinds[("IMG_0", "IMG_1")], "gardée+gardée")        # il garde les deux (autre plan)
+        self.assertEqual(kinds[("IMG_0", "IMG_2")], "doublon+gardée")
+        self.assertNotIn(("IMG_0", "IMG_3"), kinds)                         # trop différentes
+        self.assertFalse(any("IMG_4" in key for key in kinds))              # retirée pour une autre raison : ignorée
+        both = next(r for r in rows if r["roles"] == "gardée+gardée")
+        self.assertFalse(both["same_shot"])
+        self.assertTrue(any(line.startswith("doublon+gardée : 2 paires") or line.startswith("doublon+gardée : 1 paires")
                             for line in lines), lines)
 
 
@@ -469,6 +613,18 @@ class OpenerTests(unittest.TestCase):
         twin.meta["moment"] = 102                                              # même pose qu'une photo choisie
         out = curate.add_openers(selected, selected + [far, weak, twin], 30)
         self.assertEqual({c.file_id for c in out}, {c.file_id for c in selected})
+
+    def test_openers_never_go_past_the_wide_shot_limit(self):
+        selected = self.album()
+        for c in selected:
+            c.meta["shot"] = "plan moyen"
+        selected[0].meta["shot"] = "scène"                                  # un plan large déjà là : plafond de 1
+        spare = [self.wide(100 + d, T0 + timedelta(days=d, hours=-1)) for d in (1, 2)]
+        free = curate.add_openers(selected, selected + spare, 30)
+        capped = curate.add_openers(selected, selected + spare, 30, wide_limit=1)
+        self.assertEqual(sum(c.meta["shot"] == "scène" for c in free), 3)
+        self.assertEqual(sum(c.meta["shot"] == "scène" for c in capped), 1)
+        self.assertEqual(len(capped), len(selected))
 
     def test_small_albums_are_left_alone(self):
         few = self.album()[:6]

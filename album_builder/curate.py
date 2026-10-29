@@ -5,8 +5,9 @@ confirmées par ses relectures (19 % de retraits contre 29 à 43 % pour les albu
 
 1. Un moment = des photos prises à moins de 10 minutes d'écart, de scène voisine. On en garde une
    (deux si le moment est fort : au moins 5 prises, et une autre personne ou un autre plan).
-2. Dans un moment, on garde la prise la plus naturelle : l'enfant de face, les yeux ouverts, le
-   visage bien visible, plusieurs de la famille ; la netteté ne départage qu'à la fin.
+2. Dans un moment, on garde la prise la plus vivante : l'émotion, les gestes entre les personnes,
+   plusieurs de la famille, de face. Sur ses relectures (35 prises gardées contre leur « doublon »), ce sont
+   elles qui ont départagé ; les yeux ouverts, le sourire et la netteté, non (40 à 46 %).
 3. Jamais deux fois la même pose dans l'album, même à des heures d'écart.
 4. Un séjour se raconte en chapitres (3 à 8 photos chacun), coupés aux grands écarts de temps ou
    de scène.
@@ -44,8 +45,19 @@ POSE_COS = {"L": 0.88, "B": 0.93}     # même pose : ses paires gardées à la m
 SAME_FRAME_BITS = 4                   # dhash : même cadrage (copie, rafale serrée)
 STRONG_TAKES = 5                      # un moment de 5 prises ou plus peut donner une 2e photo…
 SECOND_TAKE_SLACK = 0.12              # … si elle apporte quelqu'un d'autre ou un autre plan
-TAKE_WEIGHTS = {"frontal": 0.18, "eyes": 0.12, "smile": 0.08, "emotion": 0.10, "face": 0.10,
-                "people": 0.08, "score": 0.26, "sharp": 0.08}
+# part des paires (prise gardée, prise retirée en « doublon ») où la prise gardée est la meilleure, sur 35 paires :
+# émotion (œil précis) 76 %, note 70 %, personnes 69 %, gestes entre eux 66 %, moment et hauteur d'œil 62 %,
+# de face 59 % ; visage 50 %, beauté 50 %, sourire 46 %, netteté 46 %, yeux ouverts 40 % (rien à en tirer)
+TAKE_WEIGHTS = {"emotion": 0.25, "score": 0.20, "people": 0.20, "interaction": 0.15, "frontal": 0.10,
+                "moment": 0.05, "eye_level": 0.05}
+TAKE_PRESETS = {                      # pour comparer des réglages sur les paires relues (`--takes`)
+    "avant": {"frontal": 0.18, "eyes": 0.12, "smile": 0.08, "emotion": 0.10, "face": 0.10,
+              "people": 0.08, "score": 0.26, "sharp": 0.08},
+    "actuel": TAKE_WEIGHTS,
+    "émotion et monde": {"emotion": 0.5, "people": 0.5},
+    "note seule": {"score": 1.0},
+    "sans la note": {"emotion": 0.3, "people": 0.3, "interaction": 0.2, "frontal": 0.1, "moment": 0.1},
+}
 FACE_FULL = 0.02                      # visage de la famille à 2 % de l'image : crédit plein (plus gros : pas mieux)
 SHARP_FULL = 0.6                      # au-delà de cette netteté, plus de crédit : un filtre, pas un but
 
@@ -120,17 +132,28 @@ def find_moments(items: list[Candidate]) -> list[list[Candidate]]:
     return clusters
 
 
-def take_value(c: Candidate) -> float:
-    """Quelle prise garder dans un moment : l'enfant de face, les yeux ouverts, un visage de la
-    famille bien visible, plusieurs de la famille, ce qui plaît ; la netteté ne départage qu'à la fin."""
-    w, p = TAKE_WEIGHTS, c.parts
-    emotion = p.get("emotion_l", p.get("emotion", 0.5))
-    face = min(1.0, c.meta.get("family_area", 0.0) / FACE_FULL)
-    people = min(1.0, len(c.labels) / 3.0)
-    sharp = min(1.0, p.get("sharpness", 0.5) / SHARP_FULL)
-    return (w["frontal"] * p.get("frontal", 0.5) + w["eyes"] * p.get("eyes", 0.5)
-            + w["smile"] * p.get("smile", 0.5) + w["emotion"] * emotion + w["face"] * face
-            + w["people"] * people + w["score"] * c.score + w["sharp"] * sharp)
+def take_features(c: Candidate) -> dict[str, float]:
+    """Ce qui peut départager deux prises d'un même moment, de 0 à 1 (0,5 quand ce n'est pas mesuré)."""
+    p = c.parts
+    return {
+        "frontal": p.get("frontal", 0.5), "eyes": p.get("eyes", 0.5), "smile": p.get("smile", 0.5),
+        "emotion": p.get("emotion_l", p.get("emotion", 0.5)),
+        "face": min(1.0, c.meta.get("family_area", 0.0) / FACE_FULL),
+        "people": min(1.0, len(c.labels) / 3.0),
+        "score": c.score,
+        "sharp": min(1.0, p.get("sharpness", 0.5) / SHARP_FULL),
+        "interaction": p.get("interaction", 0.5), "moment": p.get("moment", 0.5),
+        "eye_level": p.get("eye_level", 0.5), "face_seen": p.get("face_seen", 0.5),
+        "light": p.get("light", 0.5), "tidy": p.get("tidy", 0.5),
+        "beauty": p.get("beauty_l", p.get("beauty", 0.5)),
+    }
+
+
+def take_value(c: Candidate, weights: dict[str, float] | None = None) -> float:
+    """Quelle prise garder dans un moment : la plus vivante (émotion, gestes entre les personnes, plusieurs
+    de la famille, de face), selon ce qui a départagé les prises qu'il a gardées de leurs doublons."""
+    w, f = weights or TAKE_WEIGHTS, take_features(c)
+    return sum(w[k] * f[k] for k in w) / sum(w.values())
 
 
 def _second_take(ranked: list[Candidate]) -> Candidate | None:
@@ -147,15 +170,19 @@ def _second_take(ranked: list[Candidate]) -> Candidate | None:
 def heroes(groups: list[list[Candidate]], pinned=frozenset()) -> tuple[list[Candidate], dict[int, list[Candidate]]]:
     """(la ou les photos retenues de chaque moment, les autres prises de chaque moment, meilleures d'abord).
 
-    Une photo gardée à la relecture est toujours la photo de son moment."""
+    Une photo gardée à la relecture est toujours la photo de son moment. Les prises retirées à une relecture
+    (`meta["banned"]`) comptent pour la force du moment (le nombre de prises) mais ne sont jamais proposées."""
     picks: list[Candidate] = []
     others: dict[int, list[Candidate]] = {}
     for k, group in enumerate(groups):
-        ranked = sorted(group, key=take_value, reverse=True)
+        ranked = sorted((c for c in group if not c.meta.get("banned")), key=take_value, reverse=True)
+        if not ranked:
+            others[k] = []
+            continue
         keep = [c for c in ranked if c.file_id in pinned]
         if not keep:
             keep = [ranked[0]]
-            if len(ranked) >= STRONG_TAKES:
+            if len(group) >= STRONG_TAKES and len(ranked) > 1:
                 second = _second_take(ranked)
                 if second is not None:
                     keep.append(second)
@@ -234,6 +261,58 @@ def coverage_seeds(pool: list[Candidate], family: list[str], babies=(), pinned=f
     return {c.file_id for c in seeds}
 
 
+# ---- album plus court que demandé -----------------------------------------------------------
+EXTRA_POSE_COS = {"L": 0.93, "B": 0.97}   # une prise en plus doit être une autre image (0,96 et plus : la même)
+EXTRA_STRENGTH = 0.04                     # à valeur égale, les moments qui ont donné le plus de prises d'abord
+EXTRA_SAME_FRAME_BITS = 10                # sans vecteur : deux cadrages à 10 bits (dhash) ou moins sont la même image
+
+
+def add_extra_takes(selected: list[Candidate], others: dict[int, list[Candidate]], sizes: dict[int, int],
+                    count: int) -> list[Candidate]:
+    """Un dossier qui n'a que 25 moments pour 31 places : tous les moments d'abord, puis les moments forts
+    donnent une prise de plus (le Kotel en quatre vues, le loulav en deux) jusqu'à `event_cap` photos chacun.
+
+    Une prise en plus apporte quelqu'un d'autre ou un autre plan, et n'est jamais la même image qu'une photo
+    déjà choisie ; ni selfie, ni adulte seul, ni repas, ni visages minuscules."""
+    out = list(selected)
+    spare = [c for takes in others.values() for c in takes if c.file_id not in {o.file_id for o in out}]
+    if len(out) >= count or not spare:
+        return out
+    pool = out + spare
+    vecs = scoring.Vectors(pool)
+    index = {id(c): i for i, c in enumerate(pool)}
+    near = np.zeros(len(pool), dtype=bool)
+    mates: dict = {}
+    for c in out:
+        near |= vecs.near(index[id(c)], EXTRA_POSE_COS)
+        mates.setdefault(c.meta.get("moment"), []).append(c)
+
+    def usable(c: Candidate) -> bool:
+        k = c.meta.get("moment")
+        if len(mates.get(k, ())) >= event_cap(sizes.get(k, 1)) or near[index[id(c)]]:
+            return False
+        if c.meta.get("selfie") or c.meta.get("adult_only") or c.meta.get("meal") or c.meta.get("tiny"):
+            return False
+        i = index[id(c)]
+        if not (vecs.hasL[i] or vecs.hasB[i]) and any(      # sans œil d'éditeur : seul le cadrage dit si c'est une autre image
+                scoring.hamming_hex(c.feat["dhash"], o.feat["dhash"]) <= EXTRA_SAME_FRAME_BITS for o in mates.get(k, ())):
+            return False
+        known = set().union(*(o.labels for o in mates.get(k, ())))
+        shots = {o.meta.get("shot") for o in mates.get(k, ())}
+        return not mates.get(k) or bool(c.labels - known) or c.meta.get("shot") not in shots
+
+    while len(out) < count:
+        options = [c for c in spare if usable(c)]
+        if not options:
+            break
+        best = max(options, key=lambda c: take_value(c) + EXTRA_STRENGTH * math.log2(max(1, sizes.get(c.meta.get("moment"), 1))))
+        out.append(best)
+        spare.remove(best)
+        mates.setdefault(best.meta.get("moment"), []).append(best)
+        near |= vecs.near(index[id(best)], EXTRA_POSE_COS)
+    return sorted(out, key=lambda c: c.when)
+
+
 # ---- chapitres ------------------------------------------------------------------------------
 def _strength(ordered: list[Candidate]) -> np.ndarray:
     """Force d'une coupure avant chaque photo : écart de temps, changement de jour, changement de scène."""
@@ -295,13 +374,13 @@ def cut_chapters(selected: list[Candidate], target: int | None = None) -> list[l
 
 
 def add_openers(selected: list[Candidate], pool: list[Candidate], count: int,
-                protected=frozenset()) -> list[Candidate]:
+                protected=frozenset(), wide_limit: int | None = None) -> list[Candidate]:
     """Chaque chapitre a un plan large qui situe le lieu : on en ajoute un quand il manque.
 
     C'est la photo d'ouverture d'un album de photographe (le Kotel en grand, la salle de jeux) ; il en
     a remis trois lui-même à la relecture. Le plan large vient de la même époque, sans refaire un moment
     ni une pose déjà là. L'album ne dépasse jamais `count` : la photo la plus faible d'un chapitre
-    bien fourni lui cède la place (jamais une photo `protected`)."""
+    bien fourni lui cède la place (jamais une photo `protected`), ni `wide_limit` plans larges en tout."""
     out = sorted(selected, key=lambda c: c.when)
     groups = cut_chapters(out)
     if len(out) < MIN_FOR_CHAPTERS or len(groups) < 2:
@@ -317,6 +396,8 @@ def add_openers(selected: list[Candidate], pool: list[Candidate], count: int,
     for group in groups:
         if any(c.meta.get("shot") == "scène" for c in group):
             continue
+        if wide_limit is not None and sum(1 for c in out if c.meta.get("shot") == "scène") >= wide_limit:
+            break
         start, end = group[0].when, group[-1].when
         options = [c for c in pool if c.meta.get("shot") == "scène" and c.score >= floor
                    and c.meta.get("moment") not in moments_used and id(c) in index and not near[index[id(c)]]
@@ -482,6 +563,13 @@ def compare(auto_path: Path, ref_path: Path, workdir: Path, out=print) -> dict:
             out(f"{title} :")
             for i in ids:
                 out(f"  - {name(i)}")
+    table = moments_table(_read(workdir / ".cache" / "moments.json"), ref_ids, auto_ids)
+    if table:
+        out("Moments où la sélection à la main garde plusieurs photos ou qui comptent beaucoup de prises "
+            "(prises = toutes les prises du moment, dont celles retirées avant) :")
+        for row in table:
+            out(f"  - {row['start']} → {row['end'][11:]} : {row['takes']} prises ({row['removed_before']} retirées avant), "
+                f"à la main {row['ref']}, album automatique {row['auto']}")
     merged = merged_moments(cands, ref_ids)
     if merged:
         out(f"Moments où la sélection à la main garde plusieurs photos ({len(merged)}) — "
@@ -490,6 +578,19 @@ def compare(auto_path: Path, ref_path: Path, workdir: Path, out=print) -> dict:
             out(f"  - {', '.join(by_id[i].name for i in m['ids'])} : {m['span_min']:.0f} min d'écart, "
                 f"ressemblance la plus faible {m['min_cos']}")
     return {"exact": exact, "same_moment": same_moment, "missing": missing, "extra": extra, "merged": merged}
+
+
+def moments_table(moments: list, ref_ids: list[str], auto_ids: list[str], strong: int = 5) -> list[dict]:
+    """Les moments (voir `.cache/moments.json`) où la sélection à la main garde 2 photos ou plus, ou qui ont donné au
+    moins `strong` prises : combien de prises, combien gardées à la main, combien dans l'album automatique."""
+    out = []
+    for m in moments if isinstance(moments, list) else []:
+        ref = [i for i in m.get("ids", []) if i in set(ref_ids)]
+        auto = [i for i in m.get("ids", []) if i in set(auto_ids)]
+        if len(ref) >= 2 or (m.get("takes", 0) >= strong and (ref or auto)):
+            out.append({"start": m["start"], "end": m["end"], "takes": m["takes"],
+                        "removed_before": m.get("removed_before", 0), "ref": len(ref), "auto": len(auto)})
+    return out
 
 
 def _why(record: dict | None) -> str:
@@ -503,6 +604,10 @@ def _why(record: dict | None) -> str:
         bits.append(f"visage {record['face']:.1%}")
     if record.get("score") is not None:
         bits.append(f"note {record['score']:.2f}")
+    if record.get("twin"):
+        bits.append("ressemble à {} ({})".format(*record["twin"][:2]))
+    if record.get("blocked"):
+        bits.append("plafonds : " + ", ".join(record["blocked"]))
     bits = [b for b in bits if b]
     return f" — {record.get('why', '?')}" + (f" ({', '.join(bits)})" if bits else "")
 
@@ -582,17 +687,80 @@ def takes_report(plan_paths: list[Path], workdir: Path, out=print, min_pairs: in
         wins = sum(1.0 if a[k] > b[k] else 0.5 if a[k] == b[k] else 0.0 for a, b in both)
         acc[k] = wins / len(both)
         out(f"  {k:<12} la prise gardée est la meilleure dans {acc[k]:.0%} des {len(both)} paires")
+    presets = {}
+    out("Réglages du choix de la prise (part des paires où la prise gardée a la meilleure valeur) :")
+    for label, weights in TAKE_PRESETS.items():
+        wins = sum(1.0 if take_value(w, weights) > take_value(l, weights) else
+                   0.5 if take_value(w, weights) == take_value(l, weights) else 0.0 for w, l in pairs)
+        presets[label] = wins / len(pairs)
+        out(f"  {label:<18} {presets[label]:.0%}")
     from . import taste
 
-    fit = [k for k in names if k not in ("score", "take_value") and paired(k) == len(rows)]
-    X = np.array([[a[k] - b[k] for k in fit] for a, b in rows])
+    # les critères mesurés pour presque toutes les paires (une prise sans œil précis n'en a pas), sur les paires qui les ont
+    fit = [k for k in names if k not in ("score", "take_value") and paired(k) >= 0.8 * len(rows)]
+    usable = [(a, b) for a, b in rows if all(k in a and k in b for k in fit)]
+    if len(usable) < min_pairs or not fit:
+        return {"pairs": len(pairs), "accuracy": acc, "presets": presets, "weights": {}}
+    X = np.array([[a[k] - b[k] for k in fit] for a, b in usable])
+    X = X / (np.sqrt((X ** 2).mean(axis=0)) + 1e-9)   # même échelle pour tous : on compare des poids, pas des unités
     X = np.vstack([X, -X])
-    y = np.array([1.0] * len(rows) + [0.0] * len(rows))
+    y = np.array([1.0] * len(usable) + [0.0] * len(usable))
     model = taste.train(X, y, l2=3.0, lr=None)
     weights = dict(zip(fit, (round(float(w), 2) for w in model.w)))
-    out("Poids ajustés (plus c'est grand, plus le critère fait choisir la prise gardée) :")
+    out(f"Poids ajustés sur {len(usable)} paires, critères à la même échelle (plus c'est grand, plus le critère fait choisir la prise gardée) :")
     out("  " + ", ".join(f"{k} {w:+.2f}" for k, w in sorted(weights.items(), key=lambda kv: -abs(kv[1]))))
-    return {"pairs": len(pairs), "accuracy": acc, "weights": weights}
+    return {"pairs": len(pairs), "accuracy": acc, "presets": presets, "weights": weights}
+
+
+# ---- les paires presque pareilles et ce que la famille en a fait --------------------------------
+def pairs_report(plan_paths: list[Path], workdir: Path, out=print, max_gap: int = 6 * 3600, min_cos: float = 0.70) -> list[dict]:
+    """Chaque paire de photos qui se ressemblent (ressemblance ≥ `min_cos`, moins de 6 h d'écart) dont l'une au moins
+    est gardée : la famille garde les deux, ou retire l'autre en « doublon » ? Pour régler ce qui compte comme
+    « la même pose » : ressemblance de chaque œil, écart de dhash et de temps, même plan, mêmes personnes."""
+    rows = []
+    for path in plan_paths:
+        plan = json.loads(Path(path).read_text(encoding="utf-8"))
+        review = plan.get("review") or {}
+        kept = set(review.get("ids", []))
+        removed = {r["id"]: r.get("reason", "") for r in review.get("removed", [])}
+        role = lambda i: ("gardée" if i in kept else {"doublon": "doublon", "echange": "échange"}.get(removed.get(i), "retirée")
+                          if i in removed else "réserve")
+        cands = _load_candidates(plan, workdir)
+        vecs = scoring.Vectors(cands)
+        find_moments(cands)
+        for i, a in enumerate(cands):
+            for j in range(i + 1, len(cands)):
+                b = cands[j]
+                roles = sorted((role(a.file_id), role(b.file_id)))
+                if "gardée" not in roles or roles[1] not in ("gardée", "doublon", "échange"):
+                    continue
+                gap = abs((a.when - b.when).total_seconds())
+                sim = vecs.cos(i, j)
+                if gap > max_gap or not sim or sim[0] < min_cos:
+                    continue
+                both = lambda has, mat: round(float(mat[i] @ mat[j]), 3) if has[i] and has[j] else None
+                rows.append({
+                    "album": plan.get("album_name", ""), "a": a.name, "b": b.name, "roles": "+".join(roles),
+                    "cos_l": both(vecs.hasL, vecs.L), "cos_b": both(vecs.hasB, vecs.B),
+                    "bits": scoring.hamming_hex(a.feat["dhash"], b.feat["dhash"]), "gap_s": int(gap),
+                    "same_moment": a.meta["moment"] == b.meta["moment"],
+                    "same_shot": a.meta.get("shot") == b.meta.get("shot"),
+                    "same_people": a.labels == b.labels, "same_note": a.note == b.note,
+                })
+    out(f"{len(rows)} paires de photos qui se ressemblent, dont au moins une gardée.")
+    for kind in dict.fromkeys(r["roles"] for r in rows):
+        group = [r for r in rows if r["roles"] == kind]
+        cos = sorted(r["cos_l"] if r["cos_l"] is not None else r["cos_b"] for r in group)
+        out(f"{kind} : {len(group)} paires ; ressemblance médiane {cos[len(cos) // 2]:.2f} "
+            f"(de {cos[0]:.2f} à {cos[-1]:.2f}) ; même moment {sum(r['same_moment'] for r in group)}, "
+            f"même plan {sum(r['same_shot'] for r in group)}, mêmes personnes {sum(r['same_people'] for r in group)}.")
+    for r in sorted(rows, key=lambda r: (r["roles"], -(r["cos_l"] or r["cos_b"] or 0))):
+        flags = "".join(f for f, on in (("M", r["same_moment"]), ("P", r["same_shot"]), ("G", r["same_people"]),
+                                         ("S", r["same_note"])) if on)
+        out(f"  {r['roles']:<16} {r['a']} {r['b']}  L={r['cos_l']} B={r['cos_b']}  dhash={r['bits']}  "
+            f"{r['gap_s']} s  {flags}")
+    out("(M = même moment, P = même plan, G = mêmes personnes, S = même scène)")
+    return rows
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -601,12 +769,16 @@ def main(argv: list[str] | None = None) -> None:
                         help="plan.json d'un album automatique et plan.json d'une sélection à la main")
     parser.add_argument("--takes", nargs="+", metavar="PLAN",
                         help="plan.json relus : quelle prise du moment la famille garde-t-elle ?")
+    parser.add_argument("--pairs", nargs="+", metavar="PLAN",
+                        help="plan.json relus : parmi les photos qui se ressemblent, lesquelles garde-t-elle ?")
     parser.add_argument("--workdir", default=".", help="dossier d'Albumia (celui qui contient .cache)")
     args = parser.parse_args(argv)
     if args.compare:
         compare(Path(args.compare[0]), Path(args.compare[1]), Path(args.workdir))
     elif args.takes:
         takes_report([Path(p) for p in args.takes], Path(args.workdir))
+    elif args.pairs:
+        pairs_report([Path(p) for p in args.pairs], Path(args.workdir))
     else:
         parser.print_help()
 

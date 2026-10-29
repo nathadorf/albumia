@@ -297,6 +297,18 @@ class TasteTests(unittest.TestCase):
             self.assertIsNone(taste.model_for(Path(d)))
             self.assertIsNotNone(taste.model_for(Path(d), parts))
 
+    def test_the_scene_interest_is_not_a_learned_feature(self):
+        # il est calculé sur les mêmes exemples : chaque photo y contribue à sa propre note (AUC 0,83, trompeur)
+        from album_builder import taste
+        self.assertNotIn("scene", taste.FEATURES)
+        parts, pos, neg = self.data()
+        for i, fid in enumerate(pos + neg):                    # une « scène » qui rend les exemples prévisibles
+            parts[fid]["scene"] = 0.9 if fid in pos else 0.1
+        row = taste.features(parts[pos[0]])
+        self.assertEqual(len(row), len(taste.FEATURES))
+        self.assertEqual(float(taste.features({**parts[pos[0]], "scene": 0.0}) @ np.ones(len(taste.FEATURES))),
+                         float(row @ np.ones(len(taste.FEATURES))))
+
     def test_seed_from_plan(self):
         import json
         from album_builder import taste
@@ -315,6 +327,38 @@ class TasteTests(unittest.TestCase):
             taste.unexclude(Path(d), ["x"])
             self.assertEqual(taste.excluded(Path(d)), set())
             self.assertNotIn("x", taste.load_examples(Path(d))["neg"])
+
+
+class CriteriaScaleTests(unittest.TestCase):
+    """Les critères de photographe (CLIP) sortent presque tous près de 0 ou de 1 : on les situe parmi les photos."""
+
+    def test_odds_do_not_saturate_and_match_the_probability(self):
+        import math
+        from album_builder import aesthetic
+        rng = np.random.default_rng(1)
+        unit_rows = lambda n: (lambda m: m / np.linalg.norm(m, axis=1, keepdims=True))(rng.normal(size=(n, 12)))
+        criteria = {"tidy": (unit_rows(2), unit_rows(3)), "_scenes": (unit_rows(2), np.zeros((0, 1)))}
+        v = unit_rows(1)[0]
+        p = aesthetic.judge_vector(v, criteria)
+        odds = aesthetic.judge_vector(v, criteria, odds=True)
+        self.assertEqual(set(p), {"tidy"})
+        self.assertAlmostEqual(1 / (1 + math.exp(-odds["tidy"])), p["tidy"], places=2)
+        far = v * 1.0
+        crit_far = {"x": (np.array([far]), np.array([-far, -far]))}     # écart énorme : la probabilité vaut 1,0
+        self.assertEqual(aesthetic.judge_vector(far, crit_far)["x"], 1.0)
+        self.assertGreater(aesthetic.judge_vector(far, crit_far, odds=True)["x"], 10)
+
+    def test_ranks_spread_the_photos_and_keep_their_order(self):
+        from album_builder import aesthetic
+        odds = {f"p{i}": {"tidy": -6.0 + 0.1 * i, "moment": 9.0} for i in range(30)}   # « moment » : tout à 1,0
+        ranks = aesthetic.calibrate(odds, ("tidy", "moment", "light"))
+        tidy = [ranks[f"p{i}"]["tidy"] for i in range(30)]
+        self.assertEqual(tidy, sorted(tidy))
+        self.assertLess(tidy[0], 0.1)
+        self.assertGreater(tidy[-1], 0.9)
+        self.assertEqual({ranks[f"p{i}"]["moment"] for i in range(30)}, {0.5})   # égalité : au milieu
+        self.assertNotIn("light", ranks["p0"])                                  # critère absent : rien d'inventé
+        self.assertEqual(aesthetic.calibrate({"a": {"tidy": 1.0}}, ("tidy",)), {})   # trop peu de photos
 
 
 class FinalTouchTests(unittest.TestCase):
