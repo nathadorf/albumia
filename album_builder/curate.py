@@ -275,7 +275,8 @@ def add_extra_takes(selected: list[Candidate], others: dict[int, list[Candidate]
     Une prise en plus apporte quelqu'un d'autre ou un autre plan, et n'est jamais la même image qu'une photo
     déjà choisie ; ni selfie, ni adulte seul, ni repas, ni visages minuscules."""
     out = list(selected)
-    spare = [c for takes in others.values() for c in takes if c.file_id not in {o.file_id for o in out}]
+    chosen = {o.file_id for o in out}
+    spare = [c for takes in others.values() for c in takes if c.file_id not in chosen]
     if len(out) >= count or not spare:
         return out
     pool = out + spare
