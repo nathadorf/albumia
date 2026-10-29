@@ -312,6 +312,9 @@ def _thumb_face(item: dict):
     return vision.face_crop(img, box)
 
 
+CHILD_GROUP_COS = 0.72   # visages d'enfants sans référence à leur âge : seuls les très proches se regroupent
+
+
 @app.get("/api/face-groups")
 def face_groups():
     """« Qui est sur tes photos ? » : regroupe les visages déjà analysés qu'Albumia ne connaît pas."""
@@ -356,13 +359,25 @@ def face_groups():
     def semester(f):
         return (int(f["when"][:4]), 1 if int(f["when"][5:7]) <= 6 else 2) if f.get("when") else (0, 0)
 
+    # un semestre où un enfant n'a pas de référence à son âge : les frères se ressemblent, un groupe lâche les
+    # mélange (50 visages d'Eydel, d'Arié et de Hillel). Il faut des visages très proches pour aller ensemble.
+    tight: dict = {}
+
+    def join_at(key):
+        if key not in tight:
+            year, half = key
+            mid = date(year, 4 if half == 1 else 10, 1) if year else None
+            known = known_at(mid) if mid else {}
+            tight[key] = CHILD_GROUP_COS if mid and scoring.unsure_children(ref_sets, births, known, mid) else 0.6
+        return tight[key]
+
     clusters: list[dict] = []
     centers: dict = {}
     for f in faces[:6000]:
         key = semester(f)
         group = [c for c in clusters if c["key"] == key]
         sims = np.array([float(c["center"] @ f["emb"]) for c in group])
-        if len(group) and sims.max() >= 0.6:
+        if len(group) and sims.max() >= join_at(key):
             best = group[int(sims.argmax())]
             best["items"].append(f)
             center = best["center"] * (len(best["items"]) - 1) + f["emb"]
