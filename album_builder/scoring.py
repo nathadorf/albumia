@@ -174,10 +174,12 @@ def face_labels(
     threshold: float,
     margin: float = MATCH_MARGIN,
     allowed: set[str] | None = None,
+    strict: set[str] | frozenset = frozenset(),
 ) -> list[str | None]:
     """Pour chaque visage : la personne reconnue, ou None (inconnu ou trop ambigu).
 
     `allowed` limite les candidats (ex. : pas Arié sur une photo prise avant sa naissance).
+    `strict` : des personnes qu'on n'attribue qu'avec un score et un écart plus nets (voir `unsure_children`).
     """
     if allowed is not None:
         refs = {k: v for k, v in refs.items() if k in allowed}
@@ -194,7 +196,9 @@ def face_labels(
         order = np.argsort(sims)[::-1]
         best = float(sims[order[0]])
         second = float(sims[order[1]]) if len(order) > 1 else -1.0
-        out.append(names[order[0]] if best >= threshold and best - second >= margin else None)
+        name = names[order[0]]
+        need, gap = (max(threshold, STRICT_CHILD_COS), max(margin, STRICT_CHILD_MARGIN)) if name in strict else (threshold, margin)
+        out.append(name if best >= need and best - second >= gap else None)
     return out
 
 
@@ -233,6 +237,29 @@ def refs_at(ref_sets: dict, births: dict[str, date], when: date) -> dict[str, li
         mean = np.mean(np.asarray(chosen, dtype=float), axis=0)
         out[name] = (mean / (np.linalg.norm(mean) or 1.0)).tolist()
     return out
+
+
+# Quand un frère ou une sœur n'a pas de référence à son âge, son visage ressemble surtout à l'enfant qui en a une :
+# sur 15 photos aux légendes connues, les 7 « Hillel » justes ont un score de 0,64 et plus et un écart de 0,12 et plus,
+# les 2 fausses 0,48 / 0,62 et 0,065 / 0,087.
+STRICT_CHILD_COS = 0.63
+STRICT_CHILD_MARGIN = 0.10
+STALE_MONTHS = 12
+
+
+def unsure_children(ref_sets: dict, births: dict[str, date], refs: dict, when: date) -> set[str]:
+    """Les enfants à ne reconnaître qu'avec netteté ce jour-là : s'il y a un enfant de moins de `CHILD_MONTHS` dont
+    aucune référence datée n'a moins de `STALE_MONTHS` d'écart avec son âge (ou que `refs_at` a écarté), tous les
+    enfants de ce jour-là sont à confirmer. Vide quand chacun a une référence à son âge (après « Qui est sur tes photos ? »)."""
+    kids = {}
+    for name in ref_sets:
+        birth = births.get(name)
+        if birth and birth <= when and months_between(birth, when) < CHILD_MONTHS:
+            kids[name] = months_between(birth, when)
+    stale = any(name not in refs or not any(
+        d is not None and abs(months_between(births[name], d) - age) <= STALE_MONTHS for _, d in ref_sets[name])
+        for name, age in kids.items())
+    return set(kids) if stale else set()
 
 
 def match_labels(

@@ -406,6 +406,27 @@ class FinalTouchTests(unittest.TestCase):
         self.assertEqual(report["scène"]["auc"]["moment"], 1.0)
         self.assertTrue(any("moment 1.00" in line for line in lines))
 
+    def test_children_need_a_clear_match_while_a_sibling_has_no_reference_at_their_age(self):
+        births = {"Eydel": date(2021, 7, 14), "Hillel": date(2024, 12, 21), "Perla": date(1990, 1, 1)}
+        emb = lambda *x: list(np.array(x, float) / np.linalg.norm(x))
+        old = date(2022, 6, 1)
+        ref_sets = {"Eydel": [(emb(1, 0, 0, 0), date(2022, 6, 1))], "Hillel": [(emb(0, 1, 0, 0), date(2025, 9, 1))],
+                    "Perla": [(emb(0, 0, 1, 0), None)]}
+        when = date(2025, 10, 15)
+        refs = scoring.refs_at(ref_sets, births, when)
+        unsure = scoring.unsure_children(ref_sets, births, refs, when)
+        self.assertEqual(unsure, {"Eydel", "Hillel"})            # Eydel (4 ans) n'a qu'une référence de 11 mois
+        face_ = [{"box": [0, 0, 10, 10], "emb": emb(0, 0.55, 0, 0.835)}]   # Hillel à 0,55
+        loose = scoring.face_labels(face_, refs, 0.45)
+        self.assertEqual(loose, ["Hillel"])
+        face_[0]["emb"] = emb(0, 0.55, 0, 0.835)                              # 0,55 : sous le seuil des enfants
+        self.assertEqual(scoring.face_labels(face_, refs, 0.45, strict=unsure), [None])
+        face_[0]["emb"] = emb(0, 0.9, 0, 0.436)                              # net : toujours reconnu
+        self.assertEqual(scoring.face_labels(face_, refs, 0.45, strict=unsure), ["Hillel"])
+        ref_sets["Eydel"].append((emb(1, 0.1, 0, 0), date(2025, 6, 1)))      # une référence à 4 ans : plus de doute
+        refs = scoring.refs_at(ref_sets, births, when)
+        self.assertEqual(scoring.unsure_children(ref_sets, births, refs, when), set())
+
     def test_taste_needs_good_cross_validation(self):
         from album_builder import taste
         import numpy as np

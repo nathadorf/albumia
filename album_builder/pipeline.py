@@ -632,6 +632,7 @@ def build_plan(
     births = people.births(refs_dir)
     ref_sets = {n: [(e, dates.get(n, {}).get(photo)) for photo, e in v] for n, v in ref_photos.items()}
     refs_by_month: dict = {}
+    unsure_by_month: dict = {}
     themed = album_theme(params, files, editor, model_dir, rep)
     # 1re passe, rapide, sur toutes les photos : l'œil habituel (ViT-B/32)
     described = scenes.describe_all({f.id: (editor.get(f.id) or {}).get("vec") for f in files},
@@ -686,7 +687,11 @@ def build_plan(
         month = (f.when.year, f.when.month)
         if month not in refs_by_month:
             refs_by_month[month] = scoring.refs_at(ref_sets, births, f.when.date().replace(day=15))
-        per_face = scoring.face_labels(faces, refs_by_month[month], params.match_threshold, allowed=allowed)
+        if month not in unsure_by_month:
+            unsure_by_month[month] = scoring.unsure_children(ref_sets, births, refs_by_month[month],
+                                                             f.when.date().replace(day=15))
+        per_face = scoring.face_labels(faces, refs_by_month[month], params.match_threshold, allowed=allowed,
+                                       strict=unsure_by_month[month])
         labels = {label for label in per_face if label}
         kind = scoring.photo_kind(f.name, f.camera, f.width, f.height)
         c = scoring.Candidate(f.id, f.name, f.when, feat, labels)
@@ -886,7 +891,7 @@ def build_plan(
         rep.note(f"{len(selected)} photos seulement : il n'y en a pas plus de belles sur ce thème.")
     elif len(selected) < params.count:
         rep.note(f"{len(selected)} photos seulement : ce dossier n'a que {moments} moments différents, les autres "
-                 "photos sont des doubles, des selfies ou des photos sans personne. Tu peux en reprendre dans la réserve.")
+                 "photos en sont des doubles, des selfies ou des photos sans personne. Tu peux en reprendre dans la réserve.")
     selected = curate.add_openers(selected, pool, params.count, protected=pinned | seeds, wide_limit=wide_n)
     reserve = curate.build_reserve(selected, others, pool, params.reserve)
     members = family or list(refs)
